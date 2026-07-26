@@ -1,0 +1,179 @@
+--[[
+  YEET.lua - Resolve Scripts-menu launcher.   *** GENERATED FILE ***
+
+  Do not edit the installed copy. Edit resolve/YEET.lua.in and re-run
+  `py -3.13 install.py`, which substitutes the @@...@@ placeholders below with
+  absolute paths.
+
+  Four hard-won details, each of which caused a silent do-nothing failure:
+
+  1. NO ENVIRONMENT VARIABLES. Resolve's embedded Lua host does not reliably
+     expose %LOCALAPPDATA%. When os.getenv returned nil every path became
+     garbage: the log couldn't be written and the app couldn't be found, so
+     clicking the menu item did nothing at all. AutoSubs hardcodes absolute
+     paths in its launcher for exactly this reason, and so do we.
+
+  2. LAUNCH VIA FFI, NOT os.execute. Resolve's Lua host does not reliably run
+     os.execute. AutoSubs calls ShellExecuteA from Shell32.dll through LuaJIT's
+     FFI; os.execute is kept only as a last-ditch fallback.
+
+  3. LAUNCH THE .BAT, NOT THE .EXE. Resolve exports PYTHONHOME for its scripting
+     host, and a PyInstaller exe that inherits PYTHONHOME segfaults on startup.
+     launch_yeet.bat clears those vars first.
+
+  4. Resolve caches this file when it builds the Scripts menu at startup. After
+     reinstalling, restart Resolve or it keeps running the old copy.
+]]--
+
+-- Absolute paths baked in by install.py --------------------------------------
+local YEET_DIR = [[@@YEET_DIR@@]]
+local BAT      = [[@@BAT@@]]
+local EXE      = [[@@EXE@@]]
+local LOG_PATH = [[@@LOG@@]]
+local VERSION      = [[@@VERSION@@]]
+local INSTALLED_AT = [[@@INSTALLED_AT@@]]
+
+-- If this file was copied without substitution, fall back to the environment.
+if YEET_DIR:find("@@", 1, true) then
+  local base = (os.getenv("LOCALAPPDATA") or "") .. "\\YEET"
+  YEET_DIR = base
+  BAT = base .. "\\launch_yeet.bat"
+  EXE = base .. "\\YEET.exe"
+  LOG_PATH = base .. "\\launcher.log"
+  VERSION = "unknown (unsubstituted template)"
+  INSTALLED_AT = "unknown"
+end
+
+local function log(msg)
+  print("[YEET] " .. msg)
+  local ok, fh = pcall(io.open, LOG_PATH, "a")
+  if ok and fh then
+    fh:write(os.date("%Y-%m-%d %H:%M:%S ") .. msg .. "\n")
+    fh:close()
+  end
+end
+
+local function file_exists(path)
+  if not path or path == "" then return false end
+  local fh = io.open(path, "rb")
+  if fh then
+    fh:close()
+    return true
+  end
+  return false
+end
+
+-- Lua has no stat(); seek("end") gives the size.
+local function file_size(path)
+  local fh = io.open(path, "rb")
+  if not fh then return nil end
+  local size = fh:seek("end")
+  fh:close()
+  return size
+end
+
+local function human_size(bytes)
+  if not bytes then return "missing" end
+  if bytes >= 1048576 then
+    return string.format("%.1f MB", bytes / 1048576)
+  end
+  return string.format("%d bytes", bytes)
+end
+
+-- Status report for Resolve's Console (Workspace -> Console).
+local function print_banner()
+  local line = string.rep("=", 58)
+  print(line)
+  -- ASCII only: install.py writes this file as ASCII for Resolve's parser, so
+  -- anything fancier (middle dots, arrows) would degrade to "?".
+  print(string.format("  YEET %s   |   youtube -> timeline", VERSION))
+  print(line)
+  print(string.format("  app        : %s  (%s)", EXE, human_size(file_size(EXE))))
+  print(string.format("  launcher   : %s", BAT))
+  print(string.format("  log        : %s", LOG_PATH))
+  print(string.format("  installed  : %s", INSTALLED_AT))
+  print(string.format("  clip cache : %%TEMP%%\\yeet_downloads"))
+  print(line)
+end
+
+local function print_footer(launched)
+  print("")
+  if launched then
+    print("  Status     : launched -- progress appears in the YEET window.")
+  else
+    print("  Status     : LAUNCH FAILED -- see the attempts above and")
+    print("               " .. LOG_PATH)
+    print("  Reinstall  : py -3.13 build.py   then   py -3.13 install.py")
+  end
+  print(string.rep("=", 58))
+end
+
+-- Strategy 1: Shell32!ShellExecuteA via LuaJIT FFI (how AutoSubs does it).
+-- SW_HIDE stops the shim's console flashing; the GUI app still shows its window.
+-- ShellExecuteA returns >32 on success.
+local function launch_ffi(target, workdir)
+  local ok_ffi, ffi = pcall(require, "ffi")
+  if not ok_ffi then return false, "no ffi module" end
+
+  pcall(ffi.cdef, [[
+    int ShellExecuteA(void* hwnd, const char* lpOperation, const char* lpFile,
+                      const char* lpParameters, const char* lpDirectory, int nShowCmd);
+  ]])
+
+  local ok_load, shell32 = pcall(ffi.load, "Shell32")
+  if not ok_load then return false, "could not load Shell32" end
+
+  local ok_call, rc = pcall(function()
+    return shell32.ShellExecuteA(nil, "open", target, nil, workdir, 0)
+  end)
+  if not ok_call then return false, "ShellExecuteA raised: " .. tostring(rc) end
+  return (tonumber(rc) or 0) > 32, "ShellExecuteA returned " .. tostring(rc)
+end
+
+-- Strategy 2: Fusion's own external-open helper.
+local function launch_bmd(target)
+  if not (bmd and bmd.openfileexternal) then
+    return false, "bmd.openfileexternal unavailable"
+  end
+  local ok, rc = pcall(bmd.openfileexternal, "Open", target)
+  return ok, "openfileexternal ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
+end
+
+-- Strategy 3: os.execute (unreliable inside Resolve, fine under fuscript).
+local function launch_os(target)
+  local ok, rc = pcall(os.execute, 'start "" /min "' .. target .. '"')
+  return (ok and (rc == true or rc == 0)),
+         "os.execute ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
+end
+
+local function try_launch(target, workdir)
+  local strategies = {
+    { name = "ffi ShellExecuteA",    fn = function() return launch_ffi(target, workdir) end },
+    { name = "bmd.openfileexternal", fn = function() return launch_bmd(target) end },
+    { name = "os.execute",           fn = function() return launch_os(target) end },
+  }
+  for _, s in ipairs(strategies) do
+    local ok, detail = s.fn()
+    log(string.format("  [%s] %s -> %s", ok and "OK" or "--", s.name, tostring(detail)))
+    if ok then return true end
+  end
+  return false
+end
+
+print_banner()
+log("--- launcher invoked ---")
+
+local launched = false
+
+if not file_exists(EXE) then
+  log("ERROR: YEET.exe is missing at " .. EXE)
+elseif file_exists(BAT) then
+  log("launching shim: " .. BAT)
+  launched = try_launch(BAT, YEET_DIR)
+  log(launched and "launched." or "ERROR: every launch mechanism failed.")
+else
+  log("ERROR: launch shim missing at " .. BAT)
+  log("  (never launch the exe directly from Resolve -- see note 3 above)")
+end
+
+print_footer(launched)

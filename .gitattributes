@@ -1,0 +1,17 @@
+# Normalise to LF in the repo; check out native on Windows.
+* text=auto
+
+# Windows shells need CRLF — a .bat with LF endings can misparse.
+*.bat text eol=crlf
+
+# Python/Lua/Markdown stay LF in the repo.
+*.py text eol=lf
+*.in text eol=lf
+*.md text eol=lf
+
+# Never touch binaries if any are ever added.
+*.exe binary
+*.dll binary
+*.ico binary
+*.png binary
+*.mp4 binary
