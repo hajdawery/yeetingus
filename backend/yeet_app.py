@@ -663,7 +663,9 @@ class YeetApp:
         self.root.after(0, lambda: self.ytdlp_info_var.set(self._ytdlp_info_text()))
 
         self._check_connection()
-        self.root.after(0, lambda: self.yeet_btn.set_enabled(True))
+        # Both action buttons start disabled until the tools are resolved; go
+        # through _set_busy(False) so neither is forgotten.
+        self.root.after(0, lambda: self._set_busy(False))
 
     def _probe_version(self) -> str | None:
         try:
@@ -680,8 +682,10 @@ class YeetApp:
     def open_downloads(self) -> None:
         os.makedirs(self.download_dir, exist_ok=True)
         try:
-            if hasattr(os, "startfile"):
+            if sys.platform == "win32" and hasattr(os, "startfile"):
                 os.startfile(self.download_dir)  # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", self.download_dir])
             else:
                 subprocess.Popen(["xdg-open", self.download_dir])
             self.log(f"Opened {self.download_dir}")

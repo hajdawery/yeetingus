@@ -9,6 +9,7 @@ draw themselves on a Canvas behind their content.
 from __future__ import annotations
 
 import math
+import sys
 import tkinter as tk
 
 # --------------------------------------------------------------------------- #
@@ -26,8 +27,25 @@ ACCENT = "#edff00"      # brand accent
 ACCENT_TEXT = "#0a0b0c"  # text on accent
 DANGER = "#ff5f56"
 
-FONT = "Segoe UI"
-MONO = "Consolas"
+
+def _platform_fonts() -> tuple[str, str]:
+    """(ui, mono) font families for this OS.
+
+    Chosen by platform rather than probed, because theme.py is imported before a
+    Tk root exists and font.families() needs one. Tk silently substitutes
+    something ugly for an unknown family, so a wrong name here is invisible
+    rather than an error — hence picking families that always ship.
+    """
+    if sys.platform == "win32":
+        return "Segoe UI", "Consolas"
+    if sys.platform == "darwin":
+        # Helvetica Neue and Menlo are always present; "SF Pro" isn't reliably
+        # addressable by name from Tk.
+        return "Helvetica Neue", "Menlo"
+    return "DejaVu Sans", "DejaVu Sans Mono"
+
+
+FONT, MONO = _platform_fonts()
 
 
 def lighten(hex_color: str, amount: float) -> str:

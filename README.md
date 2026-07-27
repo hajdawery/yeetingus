@@ -49,9 +49,9 @@ asked for** — not the whole video — and hands the clip to Resolve at your pl
 
 It's the DaVinci Resolve counterpart to Yoink for Premiere Pro.
 
-> [!NOTE]
-> Add a screenshot or short GIF here — drop it in `assets/` and reference it,
-> e.g. `![screenshot](assets/screenshot.png)`.
+<div align="center">
+  <img src="assets/screenshot.jpg" alt="YEETingus window" width="420">
+</div>
 
 ---
 
