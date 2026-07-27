@@ -4,7 +4,7 @@
 
 # YEETingus
 
-**Grab any slice of a YouTube video and drop it straight onto your DaVinci Resolve timeline.**
+**Grab any slice of a YouTube video or Twitch clip and drop it straight onto your DaVinci Resolve timeline.**
 
 Paste a link, set an in and out point, hit one button. No browser, no downloads folder
 shuffling, no manual importing.
@@ -40,14 +40,14 @@ shuffling, no manual importing.
 
 ## 🎬 What it does
 
-Editing something that needs a clip of a YouTube video for reference, commentary or
-review? The usual routine is: open a browser, find a downloader, grab the whole
-video, trim it, import it, drag it to the timeline.
+Editing something that needs a clip of a YouTube video or Twitch stream for reference,
+commentary or review? The usual routine is: open a browser, find a downloader, grab
+the whole video, trim it, import it, drag it to the timeline.
 
 YEETingus collapses that into one window. It downloads **only the seconds you
 asked for** — not the whole video — and hands the clip to Resolve at your playhead.
 
-It's the DaVinci Resolve counterpart to Yoink for Premiere Pro.
+Built for DaVinci Resolve, where no equivalent tool existed.
 
 <div align="center">
   <img src="assets/screenshot.jpg" alt="YEETingus window" width="420">
@@ -103,8 +103,11 @@ It's the DaVinci Resolve counterpart to Yoink for Premiere Pro.
   up the partial files
 - **📊 Progress with real percentages** — parsed from the downloader, with clear
   phases: reading info → downloading → merging → pasting
-- **📜 Collapsible log** — hidden by default, one click to open, and it opens itself
-  automatically if something fails
+- **📜 Collapsible log** — hidden by default; **Show log** docks it beside the controls
+  and widens the window, so it never covers or shifts anything. It keeps recording
+  while hidden, and opens itself automatically if something fails
+- **🖥️ Scales with your display** — reads the system DPI, so the whole UI stays
+  proportionate on 1080p and 4K alike rather than shrinking to a postage stamp
 - **🔄 Self-updating downloader** — an **Update yt-dlp** button, because YouTube
   changes things and breakage is a matter of when, not if
 - **📦 Zero-dependency setup** — yt-dlp and ffmpeg are fetched automatically on first
@@ -394,9 +397,17 @@ nothing open", because those need different fixes.
 <details>
 <summary><b>Download fails with HTTP 403</b></summary>
 
-YouTube refused that specific format's URL — it's not about the resolution. Try
-**Best available**, then **Update yt-dlp** in Settings. Extraction breaks periodically
-as YouTube changes, and a newer yt-dlp is the usual cure.
+Two different causes:
+
+**Age-restricted videos.** These need a signed-in session, which the app doesn't
+have, so the fetch is refused outright. There's no setting that fixes it — the video
+simply isn't reachable anonymously.
+
+**A stale or rejected format URL.** Not about resolution. Try **Best available**, then
+**Update yt-dlp** in Settings. Extraction breaks periodically as YouTube changes, and
+a newer yt-dlp is the usual cure.
+
+If the video plays fine in a browser while logged out, it's the second case.
 
 </details>
 
@@ -427,7 +438,10 @@ Media Pool → **Generate Optimized Media**.
 - 🎞️ **No transcode on ingest** — deliberate; see
   [Codecs and smooth playback](#-codecs-and-smooth-playback)
 - 🔄 **No auto-update yet** — the app doesn't check for new versions of itself
-- 📼 **YouTube only** — yt-dlp supports hundreds of sites, but nothing else is tested
+- 📼 **Mostly YouTube** — **Twitch clips work too** (tested). yt-dlp supports hundreds
+  of sites, so others may well work, but nothing beyond those two is verified
+- 🔒 **Age-restricted videos fail** — they need a signed-in session, so the download is
+  refused with HTTP 403
 
 ---
 
