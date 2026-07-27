@@ -47,6 +47,64 @@ def _platform_fonts() -> tuple[str, str]:
 
 FONT, MONO = _platform_fonts()
 
+# --------------------------------------------------------------------------- #
+# DPI scaling
+# --------------------------------------------------------------------------- #
+#
+# Tk already scales *fonts* by the display DPI (an 11pt font is ~15px at 96 DPI
+# and ~22px at 144 DPI). Pixel dimensions — button heights, padding, corner
+# radii, icon geometry — do not scale, so on a HiDPI display the text grows while
+# the chrome around it stays small and everything looks cramped.
+#
+# Every pixel value therefore goes through px(), and set_scale() is called once
+# at startup with the display's DPI ratio. Sizes below are authored for 96 DPI.
+
+_SCALE = 1.0
+
+# Trim applied on top of the display's DPI scale. Windows' 150% is generous for a
+# utility window, so the whole UI is drawn slightly tighter than the OS setting
+# implies. Applied to fonts *and* pixels so proportions stay identical.
+DENSITY = 0.85
+
+
+def px(value: float) -> int:
+    """Scale a 96-DPI pixel measurement for the current display."""
+    return max(1, int(round(value * _SCALE)))
+
+
+def set_scale(factor: float) -> None:
+    global _SCALE
+    _SCALE = max(1.0, min(3.0, float(factor)))
+
+
+def get_scale() -> float:
+    return _SCALE
+
+
+def scale_from_dpi(widget: tk.Misc) -> float:
+    """Display scale as a ratio of the 96-DPI baseline (1.5 at 150%)."""
+    try:
+        return float(widget.winfo_fpixels("1i")) / 96.0
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def apply_ui_scale(root: tk.Misc) -> float:
+    """Set up DPI scaling for both pixels and fonts. Call before building widgets.
+
+    Fonts are handled by Tk's own scaling factor (points -> pixels) rather than by
+    rewriting every font size: setting it once here keeps DENSITY applying evenly
+    to text and chrome, so the layout shrinks without distorting.
+    """
+    dpi_ratio = scale_from_dpi(root)
+    set_scale(dpi_ratio * DENSITY)
+    try:
+        # Tk's default is dpi/72; fold DENSITY into it so text tracks the chrome.
+        root.tk.call("tk", "scaling", (dpi_ratio * 96.0 / 72.0) * DENSITY)
+    except tk.TclError:
+        pass
+    return get_scale()
+
 
 def lighten(hex_color: str, amount: float) -> str:
     """Blend a hex colour toward white by `amount` (0..1)."""
@@ -79,6 +137,7 @@ class Card(tk.Frame):
     def __init__(self, parent, *, radius: int = 16, fill: str = CARD,
                  outline: str = BORDER, pad: int = 22):
         super().__init__(parent, bg=parent.cget("bg"))
+        radius, pad = px(radius), px(pad)
         self._fill, self._outline, self._radius = fill, outline, radius
         self._cv = tk.Canvas(self, bg=parent.cget("bg"), highlightthickness=0,
                              bd=0, takefocus=0)
@@ -100,7 +159,7 @@ class Card(tk.Frame):
 
 def step_header(parent, number: int, title: str, *, bg: str = CARD) -> tk.Frame:
     row = tk.Frame(parent, bg=bg)
-    size = 27
+    size = px(27)
     cv = tk.Canvas(row, width=size, height=size, bg=bg, highlightthickness=0,
                    bd=0, takefocus=0)
     cv.create_oval(0, 0, size - 1, size - 1, fill=ACCENT, outline=ACCENT)
@@ -108,7 +167,7 @@ def step_header(parent, number: int, title: str, *, bg: str = CARD) -> tk.Frame:
                    font=(FONT, 11, "bold"))
     cv.pack(side="left")
     tk.Label(row, text=title, bg=bg, fg=TEXT, font=(FONT, 13, "bold")).pack(
-        side="left", padx=(12, 0))
+        side="left", padx=(px(12), 0))
     return row
 
 
@@ -126,10 +185,11 @@ class RoundButton(tk.Canvas):
                  fg: str = ACCENT_TEXT, outline: str = "", height: int = 46,
                  radius: int = 12, font=(FONT, 11, "bold"), width: int | None = None,
                  icon: str | None = None):
+        height, radius = px(height), px(radius)
         # width=1 by default: a bare Canvas requests ~238px, which would force the
         # window wider than intended. Callers size buttons via pack fill/expand.
         super().__init__(parent, bg=parent.cget("bg"), highlightthickness=0, bd=0,
-                         height=height, width=width or 1, takefocus=0)
+                         height=height, width=px(width) if width else 1, takefocus=0)
         self._text, self._cmd = text, command
         self._fill, self._fg, self._outline = fill, fg, outline
         self._hover_fill = lighten(fill, 0.14)
@@ -196,7 +256,7 @@ class RoundButton(tk.Canvas):
             x1, _, x2, _ = self.bbox(probe)
             self.delete(probe)
             text_w = x2 - x1
-            icon_w, gap = 20, 12
+            icon_w, gap = px(20), px(12)
             start = (w - (icon_w + gap + text_w)) / 2
             self._draw_icon(start + icon_w / 2, cy, fg, fill)
             self.create_text(start + icon_w + gap + text_w / 2, cy,
@@ -210,30 +270,36 @@ class RoundButton(tk.Canvas):
         """Vector icons, drawn rather than font glyphs so they stay crisp at any
         DPI and can't fall back to a missing character. `bg` is the button fill,
         used to punch holes (Tk canvases have no transparency)."""
+        # Offsets are authored for 96 DPI; s scales the whole glyph.
+        s = get_scale()
+        w2 = max(1, int(round(2 * s)))          # stroke width
+
         if self._icon == "drop":
             # Arrow dropping onto a bar: "insert this into the timeline".
-            self.create_line(cx, cy - 9, cx, cy + 1, fill=colour, width=2)
-            self.create_polygon(cx - 6, cy - 1, cx + 6, cy - 1, cx, cy + 7,
-                                fill=colour, outline=colour)
-            self.create_line(cx - 9, cy + 10, cx + 9, cy + 10, fill=colour, width=2)
+            self.create_line(cx, cy - 9 * s, cx, cy + 1 * s, fill=colour, width=w2)
+            self.create_polygon(cx - 6 * s, cy - 1 * s, cx + 6 * s, cy - 1 * s,
+                                cx, cy + 7 * s, fill=colour, outline=colour)
+            self.create_line(cx - 9 * s, cy + 10 * s, cx + 9 * s, cy + 10 * s,
+                             fill=colour, width=w2)
 
         elif self._icon == "folder":
             # Classic folder: back edge with a tab, then the front face.
             self.create_polygon(
-                cx - 9, cy + 7, cx - 9, cy - 6, cx - 2, cy - 6,
-                cx, cy - 4, cx + 9, cy - 4, cx + 9, cy + 7,
+                cx - 9 * s, cy + 7 * s, cx - 9 * s, cy - 6 * s, cx - 2 * s, cy - 6 * s,
+                cx, cy - 4 * s, cx + 9 * s, cy - 4 * s, cx + 9 * s, cy + 7 * s,
                 fill=colour, outline=colour)
             # Thin notch so the front face reads separately from the back.
-            self.create_line(cx - 9, cy - 1, cx + 9, cy - 1, fill=bg, width=1)
+            self.create_line(cx - 9 * s, cy - 1 * s, cx + 9 * s, cy - 1 * s,
+                             fill=bg, width=max(1, int(round(s))))
 
         elif self._icon == "list":
             # Three ragged lines — a log / text panel.
             for dy, half in ((-6, 9), (-1, 6), (4, 9)):
-                self.create_line(cx - half, cy + dy, cx + half, cy + dy,
-                                 fill=colour, width=2)
+                self.create_line(cx - half * s, cy + dy * s, cx + half * s,
+                                 cy + dy * s, fill=colour, width=w2)
 
         elif self._icon == "gear":
-            teeth, r_out, r_in = 8, 9.0, 6.4
+            teeth, r_out, r_in = 8, 9.0 * s, 6.4 * s
             pts: list[float] = []
             steps = teeth * 2
             for i in range(steps):
@@ -242,7 +308,7 @@ class RoundButton(tk.Canvas):
                 r = r_out if i % 2 == 0 else r_in
                 pts += [cx + r * math.cos(angle), cy + r * math.sin(angle)]
             self.create_polygon(pts, fill=colour, outline=colour)
-            hole = 2.8
+            hole = 2.8 * s
             self.create_oval(cx - hole, cy - hole, cx + hole, cy + hole,
                              fill=bg, outline=bg)
 
@@ -274,7 +340,7 @@ class Segmented(tk.Frame):
                 fill=INPUT, fg=MUTED, outline=BORDER, height=height,
                 radius=11, font=(FONT, 11),
             )
-            btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            btn.pack(side="left", fill="x", expand=True, padx=(0, px(8)))
             self._buttons[value] = btn
         self._refresh()
         variable.trace_add("write", lambda *_: self._refresh())
@@ -304,13 +370,13 @@ def entry(parent, textvariable, *, bg: str = CARD, width: int | None = None,
     """A padded, bordered dark entry. Returns the wrapper; pack/grid that."""
     wrap = tk.Frame(parent, bg=BORDER)
     inner = tk.Frame(wrap, bg=INPUT)
-    inner.pack(fill="both", expand=True, padx=1, pady=1)
+    inner.pack(fill="both", expand=True, padx=px(1), pady=px(1))
     ent = tk.Entry(inner, textvariable=textvariable, bg=INPUT, fg=TEXT,
                    relief="flat", bd=0, highlightthickness=0, justify=justify,
                    insertbackground=ACCENT, font=(FONT, 12))
     if width:
         ent.configure(width=width)
-    ent.pack(fill="both", expand=True, padx=14, pady=13)
+    ent.pack(fill="both", expand=True, padx=px(14), pady=px(13))
 
     def focus_in(_e):
         wrap.configure(bg=ACCENT)
@@ -335,16 +401,18 @@ class StatusPill(tk.Frame):
     def __init__(self, parent, *, bg: str = BG):
         super().__init__(parent, bg=bg)
         self._bg = bg
-        self._dot = tk.Canvas(self, width=12, height=12, bg=bg,
+        self._dot = tk.Canvas(self, width=px(12), height=px(12), bg=bg,
                               highlightthickness=0, bd=0, takefocus=0)
         self._dot.pack(side="left", pady=(2, 0))
         self._label = tk.Label(self, text="", bg=bg, fg=MUTED, font=(FONT, 10))
-        self._label.pack(side="left", padx=(8, 0))
+        self._label.pack(side="left", padx=(px(8), 0))
         self.set("connecting...", MUTED)
 
     def set(self, text: str, colour: str) -> None:
         self._dot.delete("all")
-        self._dot.create_oval(1, 1, 11, 11, fill=colour, outline=colour)
+        d = px(12)
+        self._dot.create_oval(px(1), px(1), d - px(1), d - px(1),
+                              fill=colour, outline=colour)
         self._label.configure(text=text, fg=TEXT if colour == ACCENT else MUTED)
 
 
@@ -358,7 +426,7 @@ class ProgressBar(tk.Canvas):
 
     def __init__(self, parent, *, height: int = 12, track: str = INPUT,
                  fill: str = ACCENT):
-        super().__init__(parent, height=height, width=1, bg=parent.cget("bg"),
+        super().__init__(parent, height=px(height), width=1, bg=parent.cget("bg"),
                          highlightthickness=0, bd=0, takefocus=0)
         self._value = 0.0
         self._track, self._fill = track, fill
@@ -394,8 +462,8 @@ def style_combobox(root: tk.Misc) -> None:
         "Y.TCombobox",
         fieldbackground=INPUT, background=INPUT, foreground=TEXT,
         arrowcolor=MUTED, bordercolor=BORDER, lightcolor=INPUT, darkcolor=INPUT,
-        selectbackground=INPUT, selectforeground=TEXT, arrowsize=16,
-        padding=11, relief="flat",
+        selectbackground=INPUT, selectforeground=TEXT, arrowsize=px(16),
+        padding=px(11), relief="flat",
     )
     style.map(
         "Y.TCombobox",

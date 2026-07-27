@@ -41,8 +41,9 @@ P_INFO, P_DOWNLOAD, P_INSERT = 0.06, 0.80, 0.97
 
 _PCT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 
-# How much the window grows/shrinks when the log panel is toggled.
-LOG_PANEL_H = 300
+# Width of the log panel docked to the right; the window grows by this when the
+# log is shown. Authored at 96 DPI like every other pixel value.
+LOG_PANEL_W = 420
 
 # yt-dlp's post-download stages. --force-keyframes-at-cuts re-encodes around the
 # cut points, so this can take a while and deserves its own label rather than
@@ -188,53 +189,87 @@ class YeetApp:
         root.title(APP_NAME)
         root.configure(bg=T.BG)
         apply_icon(root)
+        # Must happen before any widget is built: Tk scales fonts by DPI but not
+        # pixel dimensions, so without this the chrome stays small while the text
+        # grows, and the whole window looks cramped on a HiDPI display.
+        T.apply_ui_scale(root)
         T.style_combobox(root)
 
         self._build_ui()
         # Sized to the controls; the log is collapsed at startup and the window
-        # grows by LOG_PANEL_H when it's shown.
+        # widens by LOG_PANEL_W when it's shown.
         root.update_idletasks()
-        root.geometry(f"720x{root.winfo_reqheight()}")
+        root.geometry(f"{T.px(720)}x{self._fit_height(root.winfo_reqheight())}")
         # Derive the floor from what the controls actually need, so a long button
         # label can't be clipped by dragging the window narrow.
-        root.minsize(max(470, root.winfo_reqwidth()), root.winfo_reqheight())
+        root.minsize(max(T.px(470), root.winfo_reqwidth()), root.winfo_reqheight())
         self._poll_log_queue()
         threading.Thread(target=self._boot, daemon=True).start()
+
+    def _fit_height(self, wanted: int) -> int:
+        """Clamp a window height to what the screen can actually show.
+
+        At 150% scale on a 4K display the scaled layout wants ~1700px, and opening
+        the log would push it past the bottom of the screen (and behind the
+        taskbar), where the buttons become unreachable.
+        """
+        usable = int(self.root.winfo_screenheight() * 0.92)
+        floor = T.px(420)
+        if usable <= floor:          # implausibly short screen; don't fight it
+            return wanted
+        return max(floor, min(wanted, usable))
+
+    def _fit_width(self, wanted: int) -> int:
+        """Same clamp for width, so opening the log can't push the window off the
+        side of the screen."""
+        usable = int(self.root.winfo_screenwidth() * 0.95)
+        floor = T.px(470)
+        if usable <= floor:
+            return wanted
+        return max(floor, min(wanted, usable))
 
     # ---- layout ----------------------------------------------------------- #
 
     def _build_ui(self) -> None:
-        root = self.root
+        # Two columns: the controls, and the log docked to their right. Everything
+        # below builds into `root` (the left column) exactly as before; only the
+        # log lives in the shell so it can sit beside rather than under.
+        shell = tk.Frame(self.root, bg=T.BG)
+        shell.pack(fill="both", expand=True)
+        self._shell = shell
+        root = tk.Frame(shell, bg=T.BG)
+        root.pack(side="left", fill="both", expand=True)
+        self._column = root
 
         # Header ------------------------------------------------------------
         header = tk.Frame(root, bg=T.BG)
-        header.pack(fill="x", padx=26, pady=(22, 16))
+        header.pack(fill="x", padx=T.px(26), pady=(T.px(22), T.px(16)))
 
         mark = tk.Frame(header, bg=T.BG)
         mark.pack(side="left")
         tk.Label(mark, text=APP_NAME, bg=T.BG, fg=T.ACCENT,
                  font=(T.FONT, 24, "bold")).pack(side="left")
         tk.Label(mark, text=f"  v{__version__}   youtube → timeline", bg=T.BG,
-                 fg=T.MUTED, font=(T.FONT, 10)).pack(side="left", pady=(10, 0))
+                 fg=T.MUTED, font=(T.FONT, 10)).pack(side="left", pady=(T.px(10), 0))
 
         right = tk.Frame(header, bg=T.BG)
-        right.pack(side="right", pady=(8, 0))
+        right.pack(side="right", pady=(T.px(8), 0))
         self.status = T.StatusPill(right)
         self.status.pack(side="left")
         T.ghost_button(right, "↻", self.refresh_connection, height=30,
                        width=36, radius=9, font=(T.FONT, 11)).pack(
-                           side="left", padx=(12, 0))
+                           side="left", padx=(T.px(12), 0))
 
         # 1. Source --------------------------------------------------------- #
         card1 = T.Card(root)
-        card1.pack(fill="x", padx=26, pady=(0, 16))
+        card1.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         b = card1.body
-        T.step_header(b, 1, "Source").pack(anchor="w", pady=(0, 18))
+        T.step_header(b, 1, "Source").pack(anchor="w", pady=(0, T.px(18)))
 
         T.field_label(b, "Video link").pack(anchor="w")
         self.url_var = tk.StringVar()
         # width=1 keeps the requested size minimal; fill="x" makes it span the card.
-        T.entry(b, self.url_var, width=1).pack(fill="x", pady=(7, 18))
+        T.entry(b, self.url_var, width=1).pack(fill="x", pady=(T.px(7), T.px(18)))
 
         times = tk.Frame(b, bg=T.CARD)
         times.pack(fill="x")
@@ -242,26 +277,26 @@ class YeetApp:
         times.columnconfigure(1, weight=1)
 
         incol = tk.Frame(times, bg=T.CARD)
-        incol.grid(row=0, column=0, sticky="ew", padx=(0, 9))
+        incol.grid(row=0, column=0, sticky="ew", padx=(0, T.px(9)))
         T.field_label(incol, "In point").pack(anchor="w")
         self.in_var = tk.StringVar(value="00:00")
-        T.entry(incol, self.in_var, width=8).pack(fill="x", pady=(7, 0))
+        T.entry(incol, self.in_var, width=8).pack(fill="x", pady=(T.px(7), 0))
 
         outcol = tk.Frame(times, bg=T.CARD)
-        outcol.grid(row=0, column=1, sticky="ew", padx=(9, 0))
+        outcol.grid(row=0, column=1, sticky="ew", padx=(T.px(9), 0))
         T.field_label(outcol, "End point").pack(anchor="w")
         self.out_var = tk.StringVar(value="00:10")
-        T.entry(outcol, self.out_var, width=8).pack(fill="x", pady=(7, 0))
+        T.entry(outcol, self.out_var, width=8).pack(fill="x", pady=(T.px(7), 0))
 
         # Quick durations: set the end point to in-point + N.
-        T.field_label(b, "Clip length from in point").pack(anchor="w", pady=(16, 0))
+        T.field_label(b, "Clip length from in point").pack(anchor="w", pady=(T.px(16), 0))
         durations = tk.Frame(b, bg=T.CARD)
-        durations.pack(fill="x", pady=(7, 0))
+        durations.pack(fill="x", pady=(T.px(7), 0))
         for label, seconds in QUICK_DURATIONS:
             T.ghost_button(durations, label,
                            lambda s=seconds: self.set_length(s),
                            height=38, font=(T.FONT, 10)).pack(
-                               side="left", fill="x", expand=True, padx=(0, 8))
+                               side="left", fill="x", expand=True, padx=(0, T.px(8)))
         more = T.ghost_button(durations, "▾", None, height=38, width=44,
                               font=(T.FONT, 11))
         # Assigned after construction so the callback can reference the button
@@ -270,16 +305,16 @@ class YeetApp:
         more.pack(side="left")
 
         T.ghost_button(b, "Copy in point from link", self.copy_in_point_from_link,
-                       height=38, font=(T.FONT, 10)).pack(fill="x", pady=(16, 0))
+                       height=38, font=(T.FONT, 10)).pack(fill="x", pady=(T.px(16), 0))
 
         tk.Label(b, text="mm:ss  ·  hh:mm:ss  ·  or plain seconds",
-                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(12, 0))
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(T.px(12), 0))
 
         # 2. Quality -------------------------------------------------------- #
         card2 = T.Card(root)
-        card2.pack(fill="x", padx=26, pady=(0, 16))
+        card2.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         b2 = card2.body
-        T.step_header(b2, 2, "Max quality").pack(anchor="w", pady=(0, 18))
+        T.step_header(b2, 2, "Max quality").pack(anchor="w", pady=(0, T.px(18)))
         self.quality_var = tk.StringVar(value="Best available")
         ttk.Combobox(b2, textvariable=self.quality_var, style="Y.TCombobox",
                      values=list(QUALITY_OPTIONS.keys()), state="readonly",
@@ -287,16 +322,16 @@ class YeetApp:
 
         # 3. Insert at ------------------------------------------------------ #
         card3 = T.Card(root)
-        card3.pack(fill="x", padx=26, pady=(0, 16))
+        card3.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         b3 = card3.body
-        T.step_header(b3, 3, "Insert clip by").pack(anchor="w", pady=(0, 18))
+        T.step_header(b3, 3, "Insert clip by").pack(anchor="w", pady=(0, T.px(18)))
         self.insert_var = tk.StringVar(value="playhead")
         T.Segmented(b3, [("playhead", "Playhead"),
                          ("start", "Start of timeline")], self.insert_var).pack(fill="x")
 
         # Actions ----------------------------------------------------------- #
         actions = tk.Frame(root, bg=T.BG)
-        actions.pack(fill="x", padx=26, pady=(10, 20))
+        actions.pack(fill="x", padx=T.px(26), pady=(T.px(10), T.px(20)))
         # Full-width primary action with a drop-into-timeline arrow.
         self.yeet_btn = T.RoundButton(actions, YEET_LABEL, self.on_yeet, height=64,
                                       radius=14, font=(T.FONT, 15, "bold"),
@@ -309,11 +344,11 @@ class YeetApp:
         self.dl_btn = T.ghost_button(actions, "Download only",
                                      self.on_download_only, height=46,
                                      font=(T.FONT, 12))
-        self.dl_btn.pack(fill="x", pady=(10, 0))
+        self.dl_btn.pack(fill="x", pady=(T.px(10), 0))
         self.dl_btn.set_enabled(False)
 
         secondary = tk.Frame(root, bg=T.BG)
-        secondary.pack(fill="x", padx=26, pady=(0, 24))
+        secondary.pack(fill="x", padx=T.px(26), pady=(0, T.px(24)))
         buttons = (("Open folder", self.open_downloads, "folder"),
                    ("Show log", self.toggle_log, "list"),
                    ("Settings", self.open_settings, "gear"))
@@ -322,29 +357,35 @@ class YeetApp:
                                  font=(T.FONT, 11), icon=icon)
             # Gap between buttons only — the last one keeps flush with the
             # card edges above it.
-            gap = (0, 16) if i < len(buttons) - 1 else (0, 0)
+            gap = (0, T.px(16)) if i < len(buttons) - 1 else (0, 0)
             btn.pack(side="left", fill="x", expand=True, padx=gap)
             if label == "Show log":
                 self.log_btn = btn
 
         # Progress ----------------------------------------------------------- #
         prog = tk.Frame(root, bg=T.BG)
-        prog.pack(fill="x", padx=26, pady=(0, 16))
+        prog.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         self.step_var = tk.StringVar(value="Idle")
         tk.Label(prog, textvariable=self.step_var, bg=T.BG, fg=T.MUTED,
-                 font=(T.FONT, 11), anchor="w").pack(fill="x", pady=(0, 9))
+                 font=(T.FONT, 11), anchor="w").pack(fill="x", pady=(0, T.px(9)))
         self.progress = T.ProgressBar(prog)
         self.progress.pack(fill="x")
 
         # Log --------------------------------------------------------------- #
-        # Built but not packed — the log starts collapsed and is revealed by the
-        # "Show log" button, so it never needs a window resize to reach.
-        self.logcard = T.Card(root, fill=T.LOG_BG, pad=16)
-        self._log_pack = dict(fill="both", expand=True, padx=26, pady=(0, 26))
+        # Docked to the right of the controls, in a fixed-width holder so it can't
+        # steal space from them. Built but not packed: it starts collapsed and the
+        # window widens when it's revealed.
+        self.log_wrap = tk.Frame(self._shell, bg=T.BG, width=T.px(LOG_PANEL_W))
+        self.log_wrap.pack_propagate(False)
+        self._log_pack = dict(side="right", fill="both")
         self.log_visible = False
+
+        self.logcard = T.Card(self.log_wrap, fill=T.LOG_BG, pad=16)
+        self.logcard.pack(fill="both", expand=True,
+                          padx=(0, T.px(26)), pady=(T.px(22), T.px(26)))
         lb = self.logcard.body
         head = tk.Frame(lb, bg=T.LOG_BG)
-        head.pack(fill="x", pady=(0, 6))
+        head.pack(fill="x", pady=(0, T.px(6)))
         tk.Label(head, text="LOG", bg=T.LOG_BG, fg=T.MUTED,
                  font=(T.FONT, 9, "bold")).pack(side="left")
         tk.Label(head, text="clear", bg=T.LOG_BG, fg=T.MUTED, font=(T.FONT, 9),
@@ -378,31 +419,35 @@ class YeetApp:
         self.log_queue.put((f"[{datetime.now():%H:%M:%S}] {msg}", tag))
 
     def toggle_log(self) -> None:
-        """Show/hide the log panel, resizing the window to suit so the panel is
-        never something you have to drag the window open to find."""
+        """Show/hide the log panel beside the controls.
+
+        The window widens rather than growing taller: the control column is already
+        tall, so extra height risked running off the screen, while width is the
+        dimension there's room in — and a tall narrow log reads better anyway.
+        """
         root = self.root
         root.update_idletasks()
         width, height = root.winfo_width(), root.winfo_height()
+        panel = T.px(LOG_PANEL_W)
 
         if self.log_visible:
-            self.logcard.pack_forget()
+            self.log_wrap.pack_forget()
             self.log_visible = False
             self.log_btn.set_text("Show log")
             root.update_idletasks()
-            new_height = max(root.winfo_reqheight(), height - LOG_PANEL_H)
+            new_width = max(root.winfo_reqwidth(), width - panel)
         else:
-            # Packs last, so it lands below the progress bar.
-            self.logcard.pack(**self._log_pack)
+            self.log_wrap.pack(**self._log_pack)
             self.log_visible = True
             self.log_btn.set_text("Hide log")
             root.update_idletasks()
-            new_height = max(height + LOG_PANEL_H, root.winfo_reqheight())
+            new_width = max(width + panel, root.winfo_reqwidth())
             self.log_text.see("end")
 
-        # Keep the floor in step with what's actually on screen, so collapsing
-        # can genuinely shrink the window and expanding can't clip.
-        root.minsize(max(470, root.winfo_reqwidth()), root.winfo_reqheight())
-        root.geometry(f"{width}x{new_height}")
+        # Keep the floor in step with what's on screen, so collapsing can genuinely
+        # shrink the window and expanding can't clip.
+        root.minsize(max(T.px(470), root.winfo_reqwidth()), root.winfo_reqheight())
+        root.geometry(f"{self._fit_width(new_width)}x{self._fit_height(height)}")
 
     def reveal_log(self) -> None:
         """Bring the log into view (used when something goes wrong)."""
@@ -535,23 +580,23 @@ class YeetApp:
         win.title(f"{APP_NAME} Settings")
         win.configure(bg=T.BG)
         apply_icon(win)
-        win.geometry("640x680")
-        win.minsize(470, 650)
+        win.geometry(f"{T.px(640)}x{T.px(680)}")
+        win.minsize(T.px(470), T.px(650))
         win.transient(self.root)
         win.grab_set()
 
         tk.Label(win, text="Settings", bg=T.BG, fg=T.TEXT,
-                 font=(T.FONT, 17, "bold")).pack(anchor="w", padx=26, pady=(22, 16))
+                 font=(T.FONT, 17, "bold")).pack(anchor="w", padx=T.px(26), pady=(T.px(22), T.px(16)))
 
         card = T.Card(win)
-        card.pack(fill="x", padx=26, pady=(0, 16))
+        card.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         b = card.body
-        T.step_header(b, 1, "Clip storage").pack(anchor="w", pady=(0, 16))
+        T.step_header(b, 1, "Clip storage").pack(anchor="w", pady=(0, T.px(16)))
         T.field_label(b, "Downloaded clips are saved here").pack(anchor="w")
 
         dir_var = tk.StringVar(value=self.download_dir)
         row = tk.Frame(b, bg=T.CARD)
-        row.pack(fill="x", pady=(4, 0))
+        row.pack(fill="x", pady=(T.px(4), 0))
         T.entry(row, dir_var, width=1).pack(side="left", fill="x", expand=True)
 
         def browse() -> None:
@@ -562,12 +607,12 @@ class YeetApp:
                 dir_var.set(os.path.normpath(chosen))
 
         T.ghost_button(row, "Browse…", browse, height=48, width=110).pack(
-            side="left", padx=(9, 0))
+            side="left", padx=(T.px(9), 0))
         tk.Label(b, text="Existing clips are left where they are.",
-                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(10, 0))
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(T.px(10), 0))
 
         info = T.Card(win)
-        info.pack(fill="x", padx=26, pady=(0, 16))
+        info.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         ib = info.body
         T.step_header(ib, 2, "Tools").pack(anchor="w", pady=(0, 14))
         # Live vars so an update performed from this window refreshes in place.
@@ -597,7 +642,7 @@ class YeetApp:
 
         self.update_btn = T.ghost_button(ib, "Update yt-dlp", self.on_update_ytdlp,
                                          height=40, font=(T.FONT, 10))
-        self.update_btn.pack(fill="x", pady=(14, 0))
+        self.update_btn.pack(fill="x", pady=(T.px(14), 0))
         if self.busy:
             self.update_btn.set_enabled(False)
 
@@ -608,14 +653,14 @@ class YeetApp:
 
         # About / credit ---------------------------------------------------- #
         about = tk.Frame(win, bg=T.BG)
-        about.pack(fill="x", padx=26, pady=(2, 0))
+        about.pack(fill="x", padx=T.px(26), pady=(T.px(2), 0))
         tk.Label(about, text=f"{APP_NAME} v{__version__}", bg=T.BG, fg=T.MUTED,
                  font=(T.FONT, 9)).pack(side="left")
         tk.Label(about, text=COPYRIGHT, bg=T.BG, fg=T.MUTED,
                  font=(T.FONT, 9)).pack(side="right")
 
         buttons = tk.Frame(win, bg=T.BG)
-        buttons.pack(fill="x", padx=26, pady=(10, 22))
+        buttons.pack(fill="x", padx=T.px(26), pady=(10, 22))
 
         def save() -> None:
             new_dir = dir_var.get().strip()
@@ -641,7 +686,7 @@ class YeetApp:
         T.RoundButton(buttons, "Save", save, height=48, font=(T.FONT, 12, "bold")).pack(
             side="left", fill="x", expand=True)
         T.ghost_button(buttons, "Cancel", win.destroy, height=48, width=120).pack(
-            side="left", padx=(10, 0))
+            side="left", padx=(T.px(10), 0))
 
     # ---- startup ---------------------------------------------------------- #
 
