@@ -210,6 +210,12 @@ class YeetApp:
         # Derive the floor from what the controls actually need, so a long button
         # label can't be clipped by dragging the window narrow.
         root.minsize(max(T.px(470), root.winfo_reqwidth()), root.winfo_reqheight())
+        # Native title bar follows the OS light/dark setting; without this Windows
+        # draws a white bar above a near-black window.
+        T.apply_titlebar_theme(root)
+        # Re-apply on focus so switching the OS theme while running catches up.
+        root.bind("<FocusIn>", lambda _e: T.apply_titlebar_theme(root), add="+")
+
         self._poll_log_queue()
         threading.Thread(target=self._boot, daemon=True).start()
 
@@ -599,6 +605,7 @@ class YeetApp:
         win.title(f"{APP_NAME} Settings")
         win.configure(bg=T.BG)
         apply_icon(win)
+        T.apply_titlebar_theme(win)
         win.geometry(f"{T.px(640)}x{self._fit_height(T.px(810))}")
         win.minsize(T.px(470), T.px(780))
         win.transient(self.root)
@@ -625,8 +632,16 @@ class YeetApp:
             if chosen:
                 dir_var.set(os.path.normpath(chosen))
 
-        T.ghost_button(row, "Browse…", browse, height=48, width=110).pack(
+        def reset_dir() -> None:
+            dir_var.set(config.default_download_dir())
+
+        T.ghost_button(row, "Browse…", browse, height=48, width=104).pack(
             side="left", padx=(T.px(9), 0))
+        reset_btn = T.ghost_button(row, "Reset", reset_dir, height=48, width=88)
+        reset_btn.pack(side="left", padx=(T.px(7), 0))
+        T.tooltip(reset_btn,
+                  f"Back to the default:\n{config.default_download_dir()}")
+
         tk.Label(b, text="Existing clips are left where they are.",
                  bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(T.px(10), 0))
 

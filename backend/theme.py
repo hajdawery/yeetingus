@@ -490,6 +490,51 @@ class ProgressBar(tk.Canvas):
 
 
 # --------------------------------------------------------------------------- #
+# Windows title bar
+# --------------------------------------------------------------------------- #
+
+
+def windows_dark_mode() -> bool:
+    """True when Windows is set to a dark app theme."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import winreg
+        key = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            light, _ = winreg.QueryValueEx(handle, "AppsUseLightTheme")
+        return not bool(light)
+    except Exception:  # noqa: BLE001 — key absent on older builds
+        return False
+
+
+def apply_titlebar_theme(window: tk.Misc, dark: bool | None = None) -> bool:
+    """Tint the native title bar to match the OS theme.
+
+    Tk draws its own content but leaves the title bar to Windows, which defaults
+    to light — glaring next to a near-black window. DWM exposes this as
+    DWMWA_USE_IMMERSIVE_DARK_MODE: attribute 20 on Windows 10 1903+ and 11, but
+    19 on 1809, so both are attempted.
+    """
+    if sys.platform != "win32":
+        return False
+    if dark is None:
+        dark = windows_dark_mode()
+    try:
+        from ctypes import byref, c_int, sizeof, windll
+        window.update_idletasks()          # the HWND must exist first
+        hwnd = windll.user32.GetParent(window.winfo_id())
+        value = c_int(1 if dark else 0)
+        for attribute in (20, 19):
+            if windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attribute, byref(value), sizeof(value)) == 0:
+                return True
+    except Exception:  # noqa: BLE001 — cosmetic only, never worth failing over
+        pass
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Tooltip
 # --------------------------------------------------------------------------- #
 

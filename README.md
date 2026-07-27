@@ -235,7 +235,10 @@ Resolve closed.
 Stored in `%LOCALAPPDATA%\YEETingus\settings.json`, written atomically and preserved
 across reinstalls.
 
-- 📁 **Clip storage folder** — with a Browse picker
+- 📁 **Clip storage folder** — with a Browse picker. Defaults to your **Videos**
+  folder (`Movies` on macOS), honouring a relocated one rather than assuming
+  `~\Videos`. Deliberately *not* `%TEMP%`, which Disk Cleanup and Storage Sense
+  are entitled to empty — that would take media your timelines reference offline.
 - ⏱️ **Default clip length** — `15s` · `30s` · `60s` · `90s`, applied to the end point
   when the app opens
 - 🧰 **Tools** — the resolved yt-dlp and ffmpeg paths and versions
@@ -248,7 +251,7 @@ across reinstalls.
 ## 📁 Where clips are saved
 
 ```
-%TEMP%\yeet_downloads\
+%USERPROFILE%\Videos\YEETingus\
 └── dQw4w9WgXcQ - Rick Astley - Never Gonna Give You Up (4K Remaster) - Rick Astley\
     ├── dQw4w9WgXcQ-RickAstley-c001.mp4
     └── dQw4w9WgXcQ-RickAstley-c002.mp4

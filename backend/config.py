@@ -22,8 +22,59 @@ _APP_DIR = os.path.join(
 SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
 
 
+def _windows_videos_dir() -> str:
+    """The real Videos folder, which users often relocate to another drive."""
+    try:
+        import winreg
+        key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            path, _ = winreg.QueryValueEx(handle, "My Video")
+        if path and os.path.isdir(path):
+            return path
+    except Exception:  # noqa: BLE001 — registry missing/renamed; fall through
+        pass
+    return os.path.join(os.path.expanduser("~"), "Videos")
+
+
+def _xdg_videos_dir() -> str:
+    """Linux: honour XDG_VIDEOS_DIR if the user has configured one."""
+    conf = os.path.join(os.path.expanduser("~"), ".config", "user-dirs.dirs")
+    try:
+        with open(conf, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("XDG_VIDEOS_DIR"):
+                    raw = line.split("=", 1)[1].strip().strip('"')
+                    path = os.path.expandvars(raw.replace("$HOME", "~"))
+                    path = os.path.expanduser(path)
+                    if os.path.isdir(path):
+                        return path
+    except OSError:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Videos")
+
+
+def videos_dir() -> str:
+    """The platform's videos folder. macOS calls it Movies, not Videos."""
+    if sys.platform == "win32":
+        return _windows_videos_dir()
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Movies")
+    return _xdg_videos_dir()
+
+
 def default_download_dir() -> str:
-    return os.path.join(tempfile.gettempdir(), "yeet_downloads")
+    """Clips live under the user's videos folder, in an app-named subfolder.
+
+    Deliberately NOT %TEMP%: Disk Cleanup and Storage Sense delete temp files,
+    which would take media that timelines still reference offline.
+    """
+    return os.path.join(videos_dir(), APP_NAME)
+
+
+# Where clips used to go. A stored value equal to this means the user never chose
+# it, so it can be upgraded to the new default; anything else is their choice and
+# is left alone.
+LEGACY_DOWNLOAD_DIR = os.path.join(tempfile.gettempdir(), "yeet_downloads")
 
 
 # Clip lengths offered in Settings, in seconds. Any positive int is accepted from
@@ -67,6 +118,13 @@ def load() -> dict:
     length = cfg.get("default_length")
     if not isinstance(length, int) or not 1 <= length <= MAX_LENGTH:
         cfg["default_length"] = DEFAULTS["default_length"]
+
+    # Upgrade anyone still pointing at the old %TEMP% location, which the OS is
+    # entitled to delete. Existing clips are NOT moved: timelines reference them
+    # by path, so relocating them would take that media offline.
+    if os.path.normcase(os.path.normpath(cfg["download_dir"])) == \
+            os.path.normcase(os.path.normpath(LEGACY_DOWNLOAD_DIR)):
+        cfg["download_dir"] = DEFAULTS["download_dir"]
     return cfg
 
 

@@ -94,7 +94,8 @@ local function print_banner()
   print(string.format("  launcher   : %s", BAT))
   print(string.format("  log        : %s", LOG_PATH))
   print(string.format("  installed  : %s", INSTALLED_AT))
-  print(string.format("  clip cache : %%TEMP%%\\yeet_downloads"))
+  -- Deliberately not printed: the clip folder is configurable, so any path
+  -- hardcoded here would eventually lie. The app's Settings shows the real one.
   print(line)
 end
 
