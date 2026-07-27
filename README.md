@@ -230,6 +230,8 @@ Stored in `%LOCALAPPDATA%\YEETingus\settings.json`, written atomically and prese
 across reinstalls.
 
 - 📁 **Clip storage folder** — with a Browse picker
+- ⏱️ **Default clip length** — `15s` · `30s` · `60s` · `90s`, applied to the end point
+  when the app opens
 - 🧰 **Tools** — the resolved yt-dlp and ffmpeg paths and versions
 - 🩺 **Resolve diagnostics** — the detected scripting library and Python version, in red
   if either is wrong. This is the first thing to check on a new machine.

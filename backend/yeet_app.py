@@ -181,6 +181,7 @@ class YeetApp:
         self.active_proc: subprocess.Popen | None = None
         self.settings = config.load()
         self.download_dir = self.settings["download_dir"]
+        self.default_length = self.settings["default_length"]
         # "Update yt-dlp" lives in the Settings window, which may be closed while
         # an update is still running — hence the nullable reference.
         self.update_btn: T.RoundButton | None = None
@@ -285,7 +286,8 @@ class YeetApp:
         outcol = tk.Frame(times, bg=T.CARD)
         outcol.grid(row=0, column=1, sticky="ew", padx=(T.px(9), 0))
         T.field_label(outcol, "End point").pack(anchor="w")
-        self.out_var = tk.StringVar(value="00:10")
+        # End point starts at the configured default length past 00:00.
+        self.out_var = tk.StringVar(value=seconds_to_timestamp(self.default_length))
         T.entry(outcol, self.out_var, width=8).pack(fill="x", pady=(T.px(7), 0))
 
         # Quick durations: set the end point to in-point + N.
@@ -580,8 +582,8 @@ class YeetApp:
         win.title(f"{APP_NAME} Settings")
         win.configure(bg=T.BG)
         apply_icon(win)
-        win.geometry(f"{T.px(640)}x{T.px(680)}")
-        win.minsize(T.px(470), T.px(650))
+        win.geometry(f"{T.px(640)}x{self._fit_height(T.px(810))}")
+        win.minsize(T.px(470), T.px(780))
         win.transient(self.root)
         win.grab_set()
 
@@ -611,10 +613,26 @@ class YeetApp:
         tk.Label(b, text="Existing clips are left where they are.",
                  bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(T.px(10), 0))
 
+        # Defaults ---------------------------------------------------------- #
+        defaults_card = T.Card(win)
+        defaults_card.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
+        db = defaults_card.body
+        T.step_header(db, 2, "Default clip length").pack(anchor="w", pady=(0, T.px(16)))
+        T.field_label(db, "End point set from the in point when the app opens").pack(
+            anchor="w")
+
+        # Snap the shown selection to a preset so a hand-edited value still
+        # highlights something sensible; it's only overwritten if Save is pressed.
+        current = min(config.LENGTH_CHOICES,
+                      key=lambda s: abs(s - self.default_length))
+        length_var = tk.StringVar(value=str(current))
+        T.Segmented(db, [(str(s), f"{s}s") for s in config.LENGTH_CHOICES],
+                    length_var).pack(fill="x", pady=(T.px(9), 0))
+
         info = T.Card(win)
         info.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         ib = info.body
-        T.step_header(ib, 2, "Tools").pack(anchor="w", pady=(0, 14))
+        T.step_header(ib, 3, "Tools").pack(anchor="w", pady=(0, 14))
         # Live vars so an update performed from this window refreshes in place.
         self.ytdlp_info_var.set(self._ytdlp_info_text())
         for label, var in (("yt-dlp", self.ytdlp_info_var),
@@ -675,9 +693,19 @@ class YeetApp:
                 return
             self.settings["download_dir"] = new_dir
             self.download_dir = new_dir
+
+            try:
+                length = int(length_var.get())
+            except ValueError:
+                length = config.DEFAULTS["default_length"]
+            self.settings["default_length"] = length
+            self.default_length = length
+
             try:
                 path = config.save(self.settings)
                 self.log(f"Clips → {new_dir}")
+                self.log(f"Default clip length → {seconds_to_timestamp(length)} "
+                         "(applied when the app opens)")
                 self.log(f"Settings saved to {path}")
             except OSError as e:
                 self.log(f"ERROR saving settings: {e}")
