@@ -210,10 +210,10 @@ class YeetApp:
         # Derive the floor from what the controls actually need, so a long button
         # label can't be clipped by dragging the window narrow.
         root.minsize(max(T.px(470), root.winfo_reqwidth()), root.winfo_reqheight())
-        # Native title bar follows the OS light/dark setting; without this Windows
-        # draws a white bar above a near-black window.
+        # Dark native title bar; without this Windows draws a white bar above a
+        # near-black window. Re-applied on focus because Windows can reset it when
+        # the OS theme changes while the app is running.
         T.apply_titlebar_theme(root)
-        # Re-apply on focus so switching the OS theme while running catches up.
         root.bind("<FocusIn>", lambda _e: T.apply_titlebar_theme(root), add="+")
 
         self._poll_log_queue()
@@ -282,8 +282,16 @@ class YeetApp:
 
         T.field_label(b, "Video link").pack(anchor="w")
         self.url_var = tk.StringVar()
+        # Auto-detect a ?t= timestamp as soon as a link is pasted.
+        self._auto_ts_url: str | None = None
+        self.url_var.trace_add("write", self._on_url_changed)
         # width=1 keeps the requested size minimal; fill="x" makes it span the card.
-        T.entry(b, self.url_var, width=1).pack(fill="x", pady=(T.px(7), T.px(18)))
+        url_entry = T.entry(b, self.url_var, width=1)
+        url_entry.pack(fill="x", pady=(T.px(7), T.px(18)))
+        T.tooltip(url_entry.entry,
+                  "Paste a YouTube or Twitch link.\n"
+                  "A ?t= timestamp is detected automatically and\n"
+                  "becomes the in point.")
 
         times = tk.Frame(b, bg=T.CARD)
         times.pack(fill="x")
@@ -294,9 +302,16 @@ class YeetApp:
         incol.grid(row=0, column=0, sticky="ew", padx=(0, T.px(9)))
         T.field_label(incol, "In point").pack(anchor="w")
         self.in_var = tk.StringVar(value="00:00")
+        self._last_in_value = self.in_var.get()
         in_entry = T.entry(incol, self.in_var, width=8)
         in_entry.pack(fill="x", pady=(T.px(7), 0))
-        T.tooltip(in_entry.entry, WHOLE_VIDEO_HINT)
+        # Typing an in point and clicking away applies the default clip length.
+        in_entry.entry.bind("<FocusOut>", self._on_in_point_committed, add="+")
+        in_entry.entry.bind("<Return>", self._on_in_point_committed, add="+")
+        T.tooltip(in_entry.entry,
+                  f"{WHOLE_VIDEO_HINT}\n\n"
+                  "Otherwise the end point follows automatically,\n"
+                  "using the default clip length from Settings.")
 
         outcol = tk.Frame(times, bg=T.CARD)
         outcol.grid(row=0, column=1, sticky="ew", padx=(T.px(9), 0))
@@ -605,11 +620,15 @@ class YeetApp:
         win.title(f"{APP_NAME} Settings")
         win.configure(bg=T.BG)
         apply_icon(win)
-        T.apply_titlebar_theme(win)
         win.geometry(f"{T.px(640)}x{self._fit_height(T.px(810))}")
         win.minsize(T.px(470), T.px(780))
         win.transient(self.root)
         win.grab_set()
+        # After transient()/grab_set(), not before: Tk recreates the window frame
+        # when the transient relationship is set, which discards the DWM attribute
+        # and left this title bar white while the main window's was dark.
+        T.apply_titlebar_theme(win)
+        win.bind("<FocusIn>", lambda _e: T.apply_titlebar_theme(win), add="+")
 
         tk.Label(win, text="Settings", bg=T.BG, fg=T.TEXT,
                  font=(T.FONT, 17, "bold")).pack(anchor="w", padx=T.px(26), pady=(T.px(22), T.px(16)))
@@ -810,7 +829,7 @@ class YeetApp:
 
     def set_entire(self) -> None:
         """Zero both points, which means "no section" — the whole video."""
-        self.in_var.set("00:00")
+        self._set_in_point("00:00")
         self.out_var.set("00:00")
         self.log("Both points cleared — the entire video will be downloaded.")
 
@@ -831,6 +850,75 @@ class YeetApp:
         finally:
             menu.grab_release()
 
+    def _set_in_point(self, stamp: str) -> None:
+        """Set the in point programmatically, without arming the focus-out recalc."""
+        self.in_var.set(stamp)
+        self._last_in_value = stamp
+
+    def _on_in_point_committed(self, _event=None) -> None:
+        """After the in point is typed and committed, apply the default length.
+
+        Only when the value actually changed — otherwise merely clicking through
+        the field would wipe an end point the user had set deliberately.
+        """
+        raw = self.in_var.get()
+        if raw == self._last_in_value:
+            return
+        start = normalize_timestamp(raw)
+        if start is None:
+            return                       # invalid; YEET will report it on submit
+        self._last_in_value = raw
+
+        end_now = normalize_timestamp(self.out_var.get())
+        if to_seconds(start) == 0 and end_now is not None and to_seconds(end_now) == 0:
+            return                       # both zero: whole-video mode, leave it
+
+        new_end = seconds_to_timestamp(to_seconds(start) + self.default_length)
+        self.out_var.set(new_end)
+        self.log(f"End point set to {new_end} "
+                 f"(+{self.default_length}s from the in point).")
+
+    def _apply_link_timestamp(self, seconds: int, auto: bool) -> None:
+        """Put a link's timestamp into the in point, keeping the range valid."""
+        stamp = seconds_to_timestamp(seconds)
+        self._set_in_point(stamp)
+        if auto:
+            self.log(f"Timestamp detected in the link — in point {stamp} "
+                     f"(t={seconds}s).")
+        else:
+            self.log(f"In point set to {stamp} (from the link's t={seconds}s).")
+
+        # An in point past the end point would just fail validation later, so
+        # nudge the end out rather than leaving the fields contradictory. Uses the
+        # configured default length so the result matches what the user expects a
+        # fresh clip to be.
+        end = normalize_timestamp(self.out_var.get())
+        if end is None or to_seconds(end) <= seconds:
+            new_end = seconds_to_timestamp(seconds + self.default_length)
+            self.out_var.set(new_end)
+            self.log(f"End point moved to {new_end} "
+                     f"(+{self.default_length}s) to keep the range valid.")
+
+    def _on_url_changed(self, *_args) -> None:
+        """Auto-apply a pasted link's ?t= timestamp.
+
+        Fires on every edit of the field, so it remembers which URL it already
+        handled — otherwise typing or re-focusing would keep resetting an in point
+        the user had since adjusted by hand.
+        """
+        url = self.url_var.get().strip()
+        if not url:
+            self._auto_ts_url = None      # cleared field: allow re-detection
+            return
+        if url == self._auto_ts_url:
+            return
+
+        seconds = naming.start_seconds_from_url(url)
+        if seconds is None:
+            return
+        self._auto_ts_url = url
+        self._apply_link_timestamp(seconds, auto=True)
+
     def copy_in_point_from_link(self) -> None:
         """Pull the ?t= timestamp out of a share link into the In point field."""
         url = self.url_var.get().strip()
@@ -844,17 +932,8 @@ class YeetApp:
                      "'Start at' ticked to get a ?t= value.")
             return
 
-        stamp = seconds_to_timestamp(seconds)
-        self.in_var.set(stamp)
-        self.log(f"In point set to {stamp} (from the link's t={seconds}s).")
-
-        # An in point past the end point would just fail validation later, so
-        # nudge the end out rather than leaving the fields contradictory.
-        end = normalize_timestamp(self.out_var.get())
-        if end is None or to_seconds(end) <= seconds:
-            new_end = seconds_to_timestamp(seconds + 10)
-            self.out_var.set(new_end)
-            self.log(f"End point moved to {new_end} to keep the range valid.")
+        self._auto_ts_url = url
+        self._apply_link_timestamp(seconds, auto=False)
 
     def _collect_job(self) -> tuple[str, str | None, str | None] | None:
         """Validate the form. Returns (url, start, end) or None after logging why.

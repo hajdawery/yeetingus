@@ -509,17 +509,21 @@ def windows_dark_mode() -> bool:
 
 
 def apply_titlebar_theme(window: tk.Misc, dark: bool | None = None) -> bool:
-    """Tint the native title bar to match the OS theme.
+    """Tint the native title bar dark.
 
     Tk draws its own content but leaves the title bar to Windows, which defaults
     to light — glaring next to a near-black window. DWM exposes this as
     DWMWA_USE_IMMERSIVE_DARK_MODE: attribute 20 on Windows 10 1903+ and 11, but
     19 on 1809, so both are attempted.
+
+    Dark for everyone, regardless of the OS setting: the UI has no light variant,
+    so following a light OS theme would just invert the mismatch. Pass dark=False
+    to override, or dark=windows_dark_mode() to follow the system again.
     """
     if sys.platform != "win32":
         return False
     if dark is None:
-        dark = windows_dark_mode()
+        dark = True
     try:
         from ctypes import byref, c_int, sizeof, windll
         window.update_idletasks()          # the HWND must exist first
