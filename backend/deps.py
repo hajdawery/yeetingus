@@ -1,10 +1,10 @@
 """
-deps.py — locate (and on first run, fetch) the external binaries YEET needs.
+deps.py — locate (and on first run, fetch) the external binaries YEETingus needs.
 
 Lookup order for each tool:
   1. env override            (YEET_YTDLP / YEET_FFMPEG)
   2. bundled next to the exe (vendor/ inside the PyInstaller bundle)
-  3. YEET's own bin dir      (%LOCALAPPDATA%\\YEET\\bin) — where first-run downloads land
+  3. the app's own bin dir   (%LOCALAPPDATA%\\YEETingus\\bin) — first-run downloads land here
   4. whatever is on PATH
   5. (yt-dlp only) the pip-installed module, via `python -m yt_dlp`
 
@@ -20,6 +20,10 @@ import sys
 import urllib.request
 import zipfile
 from typing import Callable
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from version import APP_NAME  # noqa: E402
 
 # Official release artifacts.
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
@@ -39,7 +43,7 @@ ProgressCB = Callable[[str], None]
 
 def app_dir() -> str:
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "YEET")
+    return os.path.join(base, APP_NAME)
 
 
 def bin_dir() -> str:
@@ -81,7 +85,7 @@ def _download(url: str, dest: str, log: ProgressCB) -> None:
     tmp = dest + ".part"
     last_pct = -10
 
-    req = urllib.request.Request(url, headers={"User-Agent": "YEET/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "YEETingus/1.0"})
     with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as fh:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0

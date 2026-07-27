@@ -1,5 +1,5 @@
 """
-theme.py — palette and custom Tkinter widgets for YEET's dark UI.
+theme.py — palette and custom Tkinter widgets for YEETingus' dark UI.
 
 Styled after AutoSubs: near-black canvas, softly rounded cards, numbered step
 badges, pill controls. Tk has no native rounded corners, so cards and buttons

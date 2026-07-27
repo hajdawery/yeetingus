@@ -1,18 +1,23 @@
 """
 config.py — persisted user settings.
 
-Stored as JSON next to the app in %LOCALAPPDATA%\\YEET\\settings.json, so it
-survives reinstalls (install.py only replaces YEET.exe and the launcher).
+Stored as JSON next to the app in %LOCALAPPDATA%\\YEETingus\\settings.json, so it
+survives reinstalls (install.py only replaces the exe and launcher).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from version import APP_NAME  # noqa: E402
+
 _APP_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "YEET")
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), APP_NAME)
 
 SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
 

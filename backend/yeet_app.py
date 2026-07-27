@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YEET — pull a time-ranged fragment of a YouTube video with yt-dlp and paste it
+YEETingus — pull a time-ranged fragment of a YouTube video with yt-dlp and paste it
 straight onto the current DaVinci Resolve timeline.
 
 Run from source (needs Python 3.6-3.13 — Resolve's fusionscript library is a C
@@ -9,7 +9,7 @@ extension that CRASHES on 3.14+; see resolve_bridge.MAX_PY):
     py -3.13 yeet_app.py
 
 yt-dlp and ffmpeg are fetched automatically on first run into
-%LOCALAPPDATA%\\YEET\\bin if they aren't already available.
+%LOCALAPPDATA%\\YEETingus\\bin if they aren't already available.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import deps                      # noqa: E402
 import naming                    # noqa: E402
 import resolve_bridge            # noqa: E402
 import theme as T                # noqa: E402
-from version import COPYRIGHT, __version__  # noqa: E402
+from version import APP_NAME, COPYRIGHT, __version__  # noqa: E402
 
 # Progress is split into bands so the bar moves through the whole job, not just
 # the download: info lookup, download, then the Resolve insert.
@@ -49,6 +49,13 @@ LOG_PANEL_H = 300
 # sitting at "Downloading... 100%".
 _POST_MARKERS = ("[merger]", "[videoconvertor]", "[videoremuxer]", "[fixup",
                  "[extractaudio]", "[postprocess", "[splitchapters]")
+
+# Clip-length shortcuts: end point = in point + N seconds. The first three get
+# their own buttons; the rest live behind the dropdown arrow.
+QUICK_DURATIONS = (("15s", 15), ("30s", 30), ("1m", 60))
+MORE_DURATIONS = (("2 min", 120), ("5 min", 300), ("10 min", 600))
+
+YEET_LABEL = "YEET (download & insert)"
 
 QUALITY_OPTIONS = {
     "Best available": None,
@@ -113,12 +120,44 @@ def _video_heights(data: dict) -> list[int]:
     return sorted((h for h in heights if isinstance(h, int)), reverse=True)
 
 
+# Prefer H.264 *without* sacrificing resolution: sort by resolution first, then
+# by codec. A fallback chain like "avc1 else anything" would silently cap "Best
+# available" at 1080p, since that's as high as YouTube's H.264 goes.
+#
+# Why bother: H.264 hardware-decodes and scrubs well in Resolve, VP9 less so and
+# AV1 poorly. YouTube also serves AV1 inside .mp4, so "ext=mp4" alone doesn't
+# guarantee H.264.
+FORMAT_SORT = "res,vcodec:h264"
+
+
+def icon_path() -> str | None:
+    """The app icon, whether running frozen or from source."""
+    name = f"{APP_NAME.lower()}.ico"
+    if getattr(sys, "frozen", False):
+        candidate = os.path.join(getattr(sys, "_MEIPASS", ""), "assets", name)
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(os.path.dirname(here), "assets", name)
+    return candidate if os.path.isfile(candidate) else None
+
+
+def apply_icon(window: tk.Misc) -> None:
+    """Set the window/taskbar icon. Silently skipped if the .ico is missing."""
+    path = icon_path()
+    if not path:
+        return
+    try:
+        window.iconbitmap(path)          # type: ignore[attr-defined]
+    except tk.TclError:
+        pass
+
+
 def format_selector(max_height: int | None) -> str:
+    """yt-dlp -f expression. Codec preference is handled by FORMAT_SORT."""
     if max_height is None:
         return "bv*+ba/b"
     h = max_height
-    return (f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
-            f"bv*[height<={h}]+ba/b[height<={h}]/b")
+    return f"bv*[height<={h}]+ba/b[height<={h}]/b"
 
 
 # --------------------------------------------------------------------------- #
@@ -146,8 +185,9 @@ class YeetApp:
         self.update_btn: T.RoundButton | None = None
         self.ytdlp_info_var = tk.StringVar(value="checking…")
 
-        root.title("YEET")
+        root.title(APP_NAME)
         root.configure(bg=T.BG)
+        apply_icon(root)
         T.style_combobox(root)
 
         self._build_ui()
@@ -155,7 +195,9 @@ class YeetApp:
         # grows by LOG_PANEL_H when it's shown.
         root.update_idletasks()
         root.geometry(f"720x{root.winfo_reqheight()}")
-        root.minsize(470, root.winfo_reqheight())
+        # Derive the floor from what the controls actually need, so a long button
+        # label can't be clipped by dragging the window narrow.
+        root.minsize(max(470, root.winfo_reqwidth()), root.winfo_reqheight())
         self._poll_log_queue()
         threading.Thread(target=self._boot, daemon=True).start()
 
@@ -170,7 +212,7 @@ class YeetApp:
 
         mark = tk.Frame(header, bg=T.BG)
         mark.pack(side="left")
-        tk.Label(mark, text="YEET", bg=T.BG, fg=T.ACCENT,
+        tk.Label(mark, text=APP_NAME, bg=T.BG, fg=T.ACCENT,
                  font=(T.FONT, 24, "bold")).pack(side="left")
         tk.Label(mark, text=f"  v{__version__}   youtube → timeline", bg=T.BG,
                  fg=T.MUTED, font=(T.FONT, 10)).pack(side="left", pady=(10, 0))
@@ -211,8 +253,24 @@ class YeetApp:
         self.out_var = tk.StringVar(value="00:10")
         T.entry(outcol, self.out_var, width=8).pack(fill="x", pady=(7, 0))
 
+        # Quick durations: set the end point to in-point + N.
+        T.field_label(b, "Clip length from in point").pack(anchor="w", pady=(16, 0))
+        durations = tk.Frame(b, bg=T.CARD)
+        durations.pack(fill="x", pady=(7, 0))
+        for label, seconds in QUICK_DURATIONS:
+            T.ghost_button(durations, label,
+                           lambda s=seconds: self.set_length(s),
+                           height=38, font=(T.FONT, 10)).pack(
+                               side="left", fill="x", expand=True, padx=(0, 8))
+        more = T.ghost_button(durations, "▾", None, height=38, width=44,
+                              font=(T.FONT, 11))
+        # Assigned after construction so the callback can reference the button
+        # itself for positioning the popup.
+        more._cmd = lambda btn=more: self.show_more_lengths(btn)
+        more.pack(side="left")
+
         T.ghost_button(b, "Copy in point from link", self.copy_in_point_from_link,
-                       height=38, font=(T.FONT, 10)).pack(fill="x", pady=(14, 0))
+                       height=38, font=(T.FONT, 10)).pack(fill="x", pady=(16, 0))
 
         tk.Label(b, text="mm:ss  ·  hh:mm:ss  ·  or plain seconds",
                  bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(12, 0))
@@ -240,11 +298,19 @@ class YeetApp:
         actions = tk.Frame(root, bg=T.BG)
         actions.pack(fill="x", padx=26, pady=(10, 20))
         # Full-width primary action with a drop-into-timeline arrow.
-        self.yeet_btn = T.RoundButton(actions, "YEET", self.on_yeet, height=64,
-                                      radius=14, font=(T.FONT, 16, "bold"),
+        self.yeet_btn = T.RoundButton(actions, YEET_LABEL, self.on_yeet, height=64,
+                                      radius=14, font=(T.FONT, 15, "bold"),
                                       icon="drop")
         self.yeet_btn.pack(fill="x", expand=True)
         self.yeet_btn.set_enabled(False)
+
+        # Same pipeline, minus the Resolve insert — useful when Resolve isn't
+        # running, or when you just want the file.
+        self.dl_btn = T.ghost_button(actions, "Download only",
+                                     self.on_download_only, height=46,
+                                     font=(T.FONT, 12))
+        self.dl_btn.pack(fill="x", pady=(10, 0))
+        self.dl_btn.set_enabled(False)
 
         secondary = tk.Frame(root, bg=T.BG)
         secondary.pack(fill="x", padx=26, pady=(0, 24))
@@ -335,7 +401,7 @@ class YeetApp:
 
         # Keep the floor in step with what's actually on screen, so collapsing
         # can genuinely shrink the window and expanding can't clip.
-        root.minsize(470, root.winfo_reqheight())
+        root.minsize(max(470, root.winfo_reqwidth()), root.winfo_reqheight())
         root.geometry(f"{width}x{new_height}")
 
     def reveal_log(self) -> None:
@@ -466,8 +532,9 @@ class YeetApp:
 
     def open_settings(self) -> None:
         win = tk.Toplevel(self.root)
-        win.title("YEET Settings")
+        win.title(f"{APP_NAME} Settings")
         win.configure(bg=T.BG)
+        apply_icon(win)
         win.geometry("640x680")
         win.minsize(470, 650)
         win.transient(self.root)
@@ -542,7 +609,7 @@ class YeetApp:
         # About / credit ---------------------------------------------------- #
         about = tk.Frame(win, bg=T.BG)
         about.pack(fill="x", padx=26, pady=(2, 0))
-        tk.Label(about, text=f"YEET v{__version__}", bg=T.BG, fg=T.MUTED,
+        tk.Label(about, text=f"{APP_NAME} v{__version__}", bg=T.BG, fg=T.MUTED,
                  font=(T.FONT, 9)).pack(side="left")
         tk.Label(about, text=COPYRIGHT, bg=T.BG, fg=T.MUTED,
                  font=(T.FONT, 9)).pack(side="right")
@@ -580,7 +647,7 @@ class YeetApp:
 
     def _boot(self) -> None:
         """Resolve dependencies and check Resolve, off the UI thread."""
-        self.log(f"YEET {__version__} starting…")
+        self.log(f"{APP_NAME} {__version__} starting…")
         self.log(f"Clips → {self.download_dir}")
 
         try:
@@ -621,6 +688,34 @@ class YeetApp:
         except Exception as e:  # noqa: BLE001
             self.log(f"ERROR opening folder: {e}")
 
+    def set_length(self, seconds: int) -> None:
+        """Set the end point to the in point plus `seconds`."""
+        start = normalize_timestamp(self.in_var.get())
+        if start is None:
+            self.log("ERROR: in point must be SS, MM:SS or HH:MM:SS "
+                     "before a length can be applied.")
+            return
+        end = seconds_to_timestamp(to_seconds(start) + seconds)
+        self.out_var.set(end)
+        self.log(f"Length {seconds_to_timestamp(seconds)} → end point {end}.")
+
+    def show_more_lengths(self, button) -> None:
+        """Dropdown for the longer presets that don't warrant their own button."""
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=T.INPUT, fg=T.TEXT,
+                       activebackground=T.ACCENT, activeforeground=T.ACCENT_TEXT,
+                       bd=0, relief="flat", activeborderwidth=0,
+                       font=(T.FONT, 10))
+        for label, seconds in MORE_DURATIONS:
+            menu.add_command(label=f"  {label}  ",
+                             command=lambda s=seconds: self.set_length(s))
+        try:
+            # Drop it below the arrow rather than at the cursor.
+            menu.tk_popup(button.winfo_rootx(),
+                          button.winfo_rooty() + button.winfo_height())
+        finally:
+            menu.grab_release()
+
     def copy_in_point_from_link(self) -> None:
         """Pull the ?t= timestamp out of a share link into the In point field."""
         url = self.url_var.get().strip()
@@ -646,37 +741,53 @@ class YeetApp:
             self.out_var.set(new_end)
             self.log(f"End point moved to {new_end} to keep the range valid.")
 
-    def on_yeet(self) -> None:
-        # The same button stops the job while one is running.
-        if self.busy:
-            self.on_stop()
-            return
+    def _collect_job(self) -> tuple[str, str, str] | None:
+        """Validate the form. Returns (url, start, end) or None after logging why."""
         if not self.ytdlp_cmd:
             self.log("ERROR: yt-dlp isn't available yet.")
-            return
+            return None
 
         url = self.url_var.get().strip()
         if not url:
             self.log("ERROR: no video link.")
-            return
+            return None
 
         start = normalize_timestamp(self.in_var.get())
         end = normalize_timestamp(self.out_var.get())
         if start is None or end is None:
             self.log("ERROR: in/end point must be SS, MM:SS or HH:MM:SS.")
-            return
+            return None
         if to_seconds(end) <= to_seconds(start):
             self.log("ERROR: end point must be after in point.")
-            return
+            return None
+        return url, start, end
 
+    def _start_job(self, insert: bool) -> None:
+        job = self._collect_job()
+        if job is None:
+            return
+        url, start, end = job
         self.cancel_event.clear()
         self._set_busy(True)
         threading.Thread(
             target=self._worker,
             args=(url, start, end, QUALITY_OPTIONS[self.quality_var.get()],
-                  self.insert_var.get()),
+                  self.insert_var.get(), insert),
             daemon=True,
         ).start()
+
+    def on_yeet(self) -> None:
+        # The same button stops the job while one is running.
+        if self.busy:
+            self.on_stop()
+            return
+        self._start_job(insert=True)
+
+    def on_download_only(self) -> None:
+        """Download the clip and leave it on disk — no Resolve involvement."""
+        if self.busy:
+            return
+        self._start_job(insert=False)
 
     def on_stop(self) -> None:
         if not self.busy or self.cancel_event.is_set():
@@ -715,9 +826,11 @@ class YeetApp:
             self.yeet_btn.set_text("STOP")
             self.yeet_btn.set_style(fill=T.DANGER, fg=T.ACCENT_TEXT, icon=None)
         else:
-            self.yeet_btn.set_text("YEET")
+            self.yeet_btn.set_text(YEET_LABEL)
             self.yeet_btn.set_style(fill=T.ACCENT, fg=T.ACCENT_TEXT, icon="drop")
         self.yeet_btn.set_enabled(True)
+        # Only one job at a time; STOP lives on the primary button.
+        self.dl_btn.set_enabled(not busy)
 
     def _probe_metadata(self, url: str) -> dict:
         """Look up id/title/channel before downloading, so the clip can be filed
@@ -755,17 +868,13 @@ class YeetApp:
         return {"id": naming.video_id_from_url(url), "title": "", "channel": "",
                 "heights": []}
 
-    def _probe_media(self, path: str) -> str | None:
-        """Actual resolution/fps of the downloaded file, via ffprobe.
-
-        Reports what landed on disk rather than what was requested — after
-        fallbacks those can differ.
-        """
+    def _probe_stream(self, path: str) -> dict | None:
+        """First video stream's properties via ffprobe, or None."""
         ffprobe = deps.find_ffprobe()
         if not ffprobe:
             return None
         cmd = [ffprobe, "-v", "error", "-select_streams", "v:0",
-               "-show_entries", "stream=width,height,r_frame_rate",
+               "-show_entries", "stream=codec_name,width,height,r_frame_rate",
                "-of", "json", path]
         try:
             proc = subprocess.run(
@@ -774,27 +883,46 @@ class YeetApp:
             if proc.returncode != 0:
                 return None
             streams = (json.loads(proc.stdout) or {}).get("streams") or []
-            if not streams:
-                return None
-            s = streams[0]
-            w, h = s.get("width"), s.get("height")
-            if not (w and h):
-                return None
-
-            label = f"{h}p ({w}x{h}"
-            # r_frame_rate is a rational like "30000/1001".
-            rate = str(s.get("r_frame_rate") or "")
-            if "/" in rate:
-                num, den = rate.split("/", 1)
-                try:
-                    fps = float(num) / float(den)
-                except (ValueError, ZeroDivisionError):
-                    fps = 0.0
-                if fps > 0:
-                    label += f", {fps:.2f}".rstrip("0").rstrip(".") + " fps"
-            return label + ")"
+            return streams[0] if streams else None
         except Exception:  # noqa: BLE001 — a missing detail isn't worth failing over
             return None
+
+    @staticmethod
+    def _describe_stream(s: dict | None) -> str | None:
+        """Human-readable resolution/codec/fps.
+
+        Describes what actually landed on disk rather than what was requested —
+        after codec and resolution fallbacks those can differ.
+        """
+        if not s:
+            return None
+        w, h = s.get("width"), s.get("height")
+        if not (w and h):
+            return None
+
+        codec = str(s.get("codec_name") or "?")
+        label = f"{h}p ({w}x{h}, {codec}"
+        # r_frame_rate is a rational like "30000/1001".
+        rate = str(s.get("r_frame_rate") or "")
+        if "/" in rate:
+            num, den = rate.split("/", 1)
+            try:
+                fps = float(num) / float(den)
+            except (ValueError, ZeroDivisionError):
+                fps = 0.0
+            if fps > 0:
+                label += f", {fps:.2f}".rstrip("0").rstrip(".") + " fps"
+        return label + ")"
+
+    @staticmethod
+    def _scrubs_poorly(codec: str) -> bool:
+        """VP9 and AV1 decode slowly in Resolve; H.264 hardware-decodes.
+
+        YouTube only offers H.264 up to 1080p, so anything above that is
+        necessarily one of these.
+        """
+        codec = (codec or "").lower()
+        return codec.startswith(("vp0", "vp8", "vp9", "av0", "av1"))
 
     def _resolve_quality(self, max_height: int | None, meta: dict) -> int | None:
         """Reconcile the requested cap with what the video actually offers.
@@ -823,7 +951,7 @@ class YeetApp:
         self.log(f"Using {chosen}p (capped at {max_height}p).")
         return max_height
 
-    def _worker(self, url, start, end, max_height, insert_at) -> None:
+    def _worker(self, url, start, end, max_height, insert_at, insert=True) -> None:
         try:
             self._progress(P_INFO, "Reading video info…")
             meta = self._probe_metadata(url)
@@ -842,20 +970,40 @@ class YeetApp:
                 self.reveal_log()
                 return
 
-            # Past this point the file exists; the insert itself is quick and
-            # atomic enough that we let it finish rather than half-cancel it.
-            self._progress(P_INSERT, "Pasting into timeline…")
-            self.log("Sending to Resolve…")
-            res = resolve_bridge.import_and_insert(path, insert_at=insert_at)
-            self.log(f"Inserted '{res['clipName']}' at frame {res['insertedFrame']}. Done.")
-            # Recap what was actually pasted — the filename is only an id, so the
+
+            if insert:
+                # Past this point the file exists; the insert itself is quick and
+                # atomic enough that we let it finish rather than half-cancel it.
+                self._progress(P_INSERT, "Pasting into timeline…")
+                self.log("Sending to Resolve…")
+                res = resolve_bridge.import_and_insert(path, insert_at=insert_at)
+                self.log(f"Inserted '{res['clipName']}' at frame "
+                         f"{res['insertedFrame']}. Done.")
+            else:
+                res = {"clipName": os.path.basename(path)}
+                self.log(f"Downloaded '{res['clipName']}' — not inserted. Done.")
+                self.log(f"  Saved to: {path}")
+
+            # Recap what we got — the filename is only an id, so the
             # human-readable title and channel are worth restating here.
+            stream = self._probe_stream(path)
             self.log(f"  Video:   {meta.get('title') or 'unknown'}")
             self.log(f"  Channel: {meta.get('channel') or 'unknown'}")
-            self.log(f"  Quality: {self._probe_media(path) or 'unknown'}")
+            self.log(f"  Quality: {self._describe_stream(stream) or 'unknown'}")
+
+            codec = str((stream or {}).get("codec_name") or "")
+            if self._scrubs_poorly(codec):
+                # YouTube has no H.264 above 1080p, so this is unavoidable at
+                # 1440p/4K. Resolve's own proxies handle it better than we could.
+                self.log(f"  Note: {codec} decodes slowly in Resolve. If playback "
+                         "stutters, right-click")
+                self.log("        the clip in the Media Pool -> Generate Optimized "
+                         "Media.")
+
             self.log("Make sure to credit the sources!", tag="highlight")
             self._progress(1.0, f"Done — {res['clipName']}")
-            self._check_connection(quiet=True)
+            if insert:
+                self._check_connection(quiet=True)
         except resolve_bridge.ResolveError as e:
             self.log(f"RESOLVE: {e}")
             self._progress(0.0, "Resolve error — see log")
@@ -899,9 +1047,9 @@ class YeetApp:
         # "<ID> - <title> - <channel>", sanitised for any OS.
         job_dir = naming.ensure_clip_folder(
             self.download_dir, video_id, meta.get("title", ""), meta.get("channel", ""))
-        # "<id>-clip-NNN", numbered from what's already on disk so nothing is
-        # ever overwritten.
-        stem = naming.next_clip_stem(job_dir, video_id)
+        # "<id>-<ChannelName>-cNNN", numbered from what's already on disk so
+        # nothing is ever overwritten.
+        stem = naming.next_clip_stem(job_dir, video_id, meta.get("channel", ""))
         section = f"*{start}-{end}"
 
         self.log(f"Folder: {os.path.basename(job_dir)}")
@@ -913,6 +1061,7 @@ class YeetApp:
             "--download-sections", section,
             "--force-keyframes-at-cuts",
             "-f", format_selector(max_height),
+            "-S", FORMAT_SORT,
             "--merge-output-format", "mp4",
             "--no-playlist",
             "-o", os.path.join(job_dir, stem + ".%(ext)s"),

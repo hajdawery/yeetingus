@@ -107,7 +107,7 @@ def connect():
     if not python_is_supported():
         raise ResolveError(
             f"Python {sys.version_info.major}.{sys.version_info.minor} can't load Resolve's "
-            f"scripting library (it would crash). Run YEET with Python "
+            f"scripting library (it would crash). Run the app with Python "
             f"{version_range_text()} — e.g. `py -{MAX_PY[0]}.{MAX_PY[1]} yeet_app.py`."
         )
     _ensure_env()

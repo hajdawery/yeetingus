@@ -32,6 +32,18 @@ MAX_TITLE = 80
 MAX_CHANNEL = 40
 MAX_FOLDER = 130
 
+# Used when a title or channel consisted entirely of characters we strip — an
+# all-emoji title, say. Distinct from "unknown", which means we never had the
+# value in the first place (metadata probe failed) and simply omit the field.
+FALLBACK_NAME = "unnamed"
+
+
+def _or_fallback(original: str, cleaned: str) -> str:
+    """`cleaned`, or FALLBACK_NAME when sanitising consumed real content."""
+    if cleaned:
+        return cleaned
+    return FALLBACK_NAME if (original or "").strip() else ""
+
 
 _URL_ID = re.compile(
     r"(?:[?&]v=|/shorts/|youtu\.be/|/embed/|/live/|/v/)([A-Za-z0-9_-]{6,})"
@@ -100,12 +112,26 @@ def safe_component(text: str, max_len: int = 80) -> str:
     return out
 
 
+def compact_token(text: str, max_len: int = 32) -> str:
+    """Squash text into a single separator-free token for use inside a filename.
+
+    Keeps letters, digits and combining marks (so accented and CJK channel names
+    survive) but drops spaces, punctuation and emoji entirely — "Rick Astley"
+    becomes "RickAstley". Hyphens go too, since they're the field separator in
+    the clip filename.
+    """
+    cleaned = safe_component(text, max_len * 3)
+    token = "".join(
+        ch for ch in cleaned if unicodedata.category(ch)[0] in ("L", "N", "M"))
+    return _or_fallback(text, token[:max_len])
+
+
 def folder_name(video_id: str, title: str = "", channel: str = "") -> str:
     """Build "<ID> - <title> - <channel>", omitting parts we don't know."""
     vid = safe_component(video_id, 40) or "unknown-id"
     parts = [vid]
-    t = safe_component(title, MAX_TITLE)
-    c = safe_component(channel, MAX_CHANNEL)
+    t = _or_fallback(title, safe_component(title, MAX_TITLE))
+    c = _or_fallback(channel, safe_component(channel, MAX_CHANNEL))
     if t:
         parts.append(t)
     if c:
@@ -125,14 +151,20 @@ def ensure_clip_folder(root: str, video_id: str, title: str = "",
     return path
 
 
-def next_clip_stem(folder: str, video_id: str) -> str:
-    """Return "<id>-clip-NNN" using the lowest free number in `folder`.
+def clip_prefix(video_id: str, channel: str = "") -> str:
+    """Filename prefix: "<id>-<ChannelName>-c" (channel omitted if unknown)."""
+    vid = safe_component(video_id, 40) or "unknown-id"
+    chan = compact_token(channel)
+    return f"{vid}-{chan}-c" if chan else f"{vid}-c"
+
+
+def next_clip_stem(folder: str, video_id: str, channel: str = "") -> str:
+    """Return "<id>-<ChannelName>-cNNN" using the lowest free number in `folder`.
 
     Scans what is already on disk rather than keeping a counter, so it stays
     correct across restarts and if you delete clips by hand.
     """
-    vid = safe_component(video_id, 40) or "unknown-id"
-    prefix = f"{vid}-clip-"
+    prefix = clip_prefix(video_id, channel)
 
     used: set[int] = set()
     pattern = re.compile(re.escape(prefix) + r"(\d+)", re.IGNORECASE)

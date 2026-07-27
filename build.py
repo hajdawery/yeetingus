@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build.py — freeze YEET into a standalone Windows exe.
+build.py — freeze YEETingus into a standalone Windows exe.
 
 MUST be run with a Python that Resolve's fusionscript.dll can be loaded into
 (currently 3.6-3.13 — see resolve_bridge.MAX_PY): the frozen exe embeds whichever
@@ -8,7 +8,7 @@ interpreter builds it.
 
     py -3.13 build.py
 
-Output: dist\\YEET.exe — no Python needed on the target machine. yt-dlp and
+Output: dist\\YEETingus.exe — no Python needed on the target machine. yt-dlp and
 ffmpeg are fetched on first run, so they aren't bundled.
 """
 
@@ -21,7 +21,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRY = os.path.join(HERE, "backend", "yeet_app.py")
-NAME = "YEET"
+
+sys.path.insert(0, os.path.join(HERE, "backend"))
+from version import APP_NAME as NAME  # noqa: E402
 
 
 def main() -> int:
@@ -71,9 +73,15 @@ def main() -> int:
         "--exclude-module", "setuptools",
         ENTRY,
     ]
-    icon = os.path.join(HERE, "assets", "yeet.ico")
+    # Icon: used for the exe itself, and bundled so the running window/taskbar
+    # can set it too (PyInstaller doesn't expose --icon at runtime).
+    icon = os.path.join(HERE, "assets", f"{NAME.lower()}.ico")
     if os.path.isfile(icon):
         cmd += ["--icon", icon]
+        cmd += ["--add-data", f"{icon}{os.pathsep}assets"]
+        print(f"Icon: {icon}")
+    else:
+        print(f"(no icon at {icon} — building without one)")
 
     print("Running:", " ".join(cmd))
     result = subprocess.run(cmd, cwd=HERE)
@@ -82,7 +90,7 @@ def main() -> int:
 
     exe = os.path.join(HERE, "dist", NAME + ".exe")
     if not os.path.isfile(exe):
-        print("ERROR: build reported success but dist\\YEET.exe is missing.")
+        print(f"ERROR: build reported success but {exe} is missing.")
         return 1
 
     size = os.path.getsize(exe) / 1048576

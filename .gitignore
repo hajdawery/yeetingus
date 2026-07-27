@@ -13,6 +13,11 @@ venv/
 # Optional vendored binaries (see deps.py — normally fetched on first run)
 vendor/
 
+# Source artwork (PSD + full-size exports). The built assets/*.ico is committed;
+# these stay local so the repo doesn't carry tens of MB of binary that git can't
+# diff.
+grafika/
+
 # Editors / OS
 .vscode/
 .idea/

@@ -1,4 +1,4 @@
-"""Single source of truth for YEET's version and authorship.
+"""Single source of truth for YEETingus' version and authorship.
 
 Consumed by the app (header, Settings, boot log) and by install.py, which bakes
 the version into the Lua launcher so Resolve's Console can report it.
@@ -6,5 +6,10 @@ the version into the Lua launcher so Resolve's Console can report it.
 
 __version__ = "1.0.0"
 
-AUTHOR = "haej (aka GRApedia)"
+# Display name shown in the window title, header and Settings. The executable,
+# install folder and Resolve menu entry all derive from this name;
+# install.py migrates a previous "YEET" install across and removes its leftovers.
+APP_NAME = "YEETingus"
+
+AUTHOR = "Karol Szaciłło (GRApedia)"
 COPYRIGHT = f"© 2026 {AUTHOR}"
