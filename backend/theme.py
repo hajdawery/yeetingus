@@ -106,6 +106,17 @@ def apply_ui_scale(root: tk.Misc) -> float:
     return get_scale()
 
 
+def mix(colour: str, base: str, amount: float) -> str:
+    """Blend `colour` into `base` by `amount` (0..1) — a tint, not a lighten."""
+    c = colour.lstrip("#")
+    b = base.lstrip("#")
+    out = []
+    for i in (0, 2, 4):
+        cv, bv = int(c[i:i + 2], 16), int(b[i:i + 2], 16)
+        out.append(int(round(bv + (cv - bv) * amount)))
+    return "#{:02x}{:02x}{:02x}".format(*out)
+
+
 def lighten(hex_color: str, amount: float) -> str:
     """Blend a hex colour toward white by `amount` (0..1)."""
     hex_color = hex_color.lstrip("#")
@@ -395,25 +406,54 @@ def entry(parent, textvariable, *, bg: str = CARD, width: int | None = None,
 # --------------------------------------------------------------------------- #
 
 
-class StatusPill(tk.Frame):
-    """Small connection indicator: a coloured dot plus a label."""
+class StatusPill(tk.Canvas):
+    """Connection indicator drawn as a rounded chip: status dot + label.
+
+    Sizes itself to its text, and tints the whole chip — not just the dot — so
+    the connection state reads at a glance instead of needing to be parsed.
+    """
+
+    MAX_TEXT = 34          # characters before the label is elided
 
     def __init__(self, parent, *, bg: str = BG):
-        super().__init__(parent, bg=bg)
-        self._bg = bg
-        self._dot = tk.Canvas(self, width=px(12), height=px(12), bg=bg,
-                              highlightthickness=0, bd=0, takefocus=0)
-        self._dot.pack(side="left", pady=(2, 0))
-        self._label = tk.Label(self, text="", bg=bg, fg=MUTED, font=(FONT, 10))
-        self._label.pack(side="left", padx=(px(8), 0))
-        self.set("connecting...", MUTED)
+        super().__init__(parent, bg=bg, highlightthickness=0, bd=0, takefocus=0,
+                         height=px(30), width=px(10))
+        self._text = ""
+        self._colour = MUTED
+        self.set("connecting…", MUTED)
 
     def set(self, text: str, colour: str) -> None:
-        self._dot.delete("all")
-        d = px(12)
-        self._dot.create_oval(px(1), px(1), d - px(1), d - px(1),
-                              fill=colour, outline=colour)
-        self._label.configure(text=text, fg=TEXT if colour == ACCENT else MUTED)
+        if len(text) > self.MAX_TEXT:
+            text = text[:self.MAX_TEXT - 1].rstrip() + "…"
+        self._text, self._colour = text, colour
+        self._draw()
+
+    def _draw(self) -> None:
+        self.delete("all")
+        font = (FONT, 10)
+        pad, dot, gap = px(12), px(9), px(9)
+
+        # Measure the label so the chip hugs it.
+        probe = self.create_text(-999, -999, text=self._text, font=font)
+        x1, _, x2, _ = self.bbox(probe)
+        self.delete(probe)
+
+        h = px(30)
+        w = pad * 2 + dot + gap + (x2 - x1)
+        self.configure(width=w, height=h)
+
+        connected = self._colour == ACCENT
+        # A faint wash of the status colour, so the chip itself carries the state.
+        fill = mix(self._colour, INPUT, 0.14) if connected else mix(self._colour, INPUT, 0.10)
+        round_rect(self, 1, 1, w - 1, h - 1, h / 2,
+                   fill=fill, outline=mix(self._colour, BORDER, 0.35))
+
+        cy = h / 2
+        cx = pad + dot / 2
+        self.create_oval(cx - dot / 2, cy - dot / 2, cx + dot / 2, cy + dot / 2,
+                         fill=self._colour, outline=self._colour)
+        self.create_text(pad + dot + gap, cy, text=self._text, anchor="w",
+                         fill=TEXT if connected else MUTED, font=font)
 
 
 # --------------------------------------------------------------------------- #
@@ -447,6 +487,65 @@ class ProgressBar(tk.Canvas):
             # Never narrower than the cap radius, or the rounding looks broken.
             fw = max(h, w * self._value)
             round_rect(self, 0, 0, fw, h, r, fill=self._fill, outline=self._fill)
+
+
+# --------------------------------------------------------------------------- #
+# Tooltip
+# --------------------------------------------------------------------------- #
+
+
+class _Tooltip:
+    """Hover hint in a borderless Toplevel, styled to match the app."""
+
+    def __init__(self, widget: tk.Misc, text: str, delay: int = 450):
+        self.widget, self.text, self.delay = widget, text, delay
+        self._after_id: str | None = None
+        self._win: tk.Toplevel | None = None
+        # add="+" so we don't clobber the focus bindings entries already have.
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+        widget.bind("<Destroy>", self.hide, add="+")
+
+    def _schedule(self, _event=None) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._win is not None or not self.widget.winfo_exists():
+            return
+        win = tk.Toplevel(self.widget)
+        win.wm_overrideredirect(True)          # no title bar or border
+        win.configure(bg=BORDER)               # 1px border via the outer bg
+        inner = tk.Frame(win, bg=INPUT)
+        inner.pack(padx=1, pady=1)
+        tk.Label(inner, text=self.text, bg=INPUT, fg=TEXT, font=(FONT, 9),
+                 justify="left", wraplength=px(300)).pack(padx=px(10), pady=px(7))
+        win.wm_geometry(f"+{self.widget.winfo_rootx() + px(10)}"
+                        f"+{self.widget.winfo_rooty() + self.widget.winfo_height() + px(6)}")
+        self._win = win
+
+    def hide(self, _event=None) -> None:
+        self._cancel()
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except tk.TclError:
+                pass
+            self._win = None
+
+
+def tooltip(widget: tk.Misc, text: str, delay: int = 450) -> _Tooltip:
+    """Attach a hover hint to `widget` (keep no reference; it binds itself)."""
+    return _Tooltip(widget, text, delay)
 
 
 def style_combobox(root: tk.Misc) -> None:

@@ -51,10 +51,16 @@ LOG_PANEL_W = 420
 _POST_MARKERS = ("[merger]", "[videoconvertor]", "[videoremuxer]", "[fixup",
                  "[extractaudio]", "[postprocess", "[splitchapters]")
 
-# Clip-length shortcuts: end point = in point + N seconds. The first three get
-# their own buttons; the rest live behind the dropdown arrow.
-QUICK_DURATIONS = (("15s", 15), ("30s", 30), ("1m", 60))
-MORE_DURATIONS = (("2 min", 120), ("5 min", 300), ("10 min", 600))
+# Clip-length shortcuts: end point = in point + N seconds. These get their own
+# buttons; the longer presets live behind the dropdown arrow.
+QUICK_DURATIONS = (("15s", 15), ("30s", 30), ("90s", 90))
+MORE_DURATIONS = (("2 minutes", 120), ("5 minutes", 300), ("10 minutes", 600))
+
+# Both points at zero means "no section" — yt-dlp fetches the whole video.
+WHOLE_VIDEO_HINT = (
+    "Leave both the in point and end point at 00:00\n"
+    "to download the entire video."
+)
 
 YEET_LABEL = "YEET (download & insert)"
 
@@ -257,9 +263,10 @@ class YeetApp:
         right.pack(side="right", pady=(T.px(8), 0))
         self.status = T.StatusPill(right)
         self.status.pack(side="left")
-        T.ghost_button(right, "↻", self.refresh_connection, height=30,
-                       width=36, radius=9, font=(T.FONT, 11)).pack(
-                           side="left", padx=(T.px(12), 0))
+        refresh = T.ghost_button(right, "↻", self.refresh_connection, height=30,
+                                 width=36, radius=9, font=(T.FONT, 11))
+        refresh.pack(side="left", padx=(T.px(12), 0))
+        T.tooltip(refresh, "Re-check the connection to DaVinci Resolve.")
 
         # 1. Source --------------------------------------------------------- #
         card1 = T.Card(root)
@@ -281,14 +288,18 @@ class YeetApp:
         incol.grid(row=0, column=0, sticky="ew", padx=(0, T.px(9)))
         T.field_label(incol, "In point").pack(anchor="w")
         self.in_var = tk.StringVar(value="00:00")
-        T.entry(incol, self.in_var, width=8).pack(fill="x", pady=(T.px(7), 0))
+        in_entry = T.entry(incol, self.in_var, width=8)
+        in_entry.pack(fill="x", pady=(T.px(7), 0))
+        T.tooltip(in_entry.entry, WHOLE_VIDEO_HINT)
 
         outcol = tk.Frame(times, bg=T.CARD)
         outcol.grid(row=0, column=1, sticky="ew", padx=(T.px(9), 0))
         T.field_label(outcol, "End point").pack(anchor="w")
         # End point starts at the configured default length past 00:00.
         self.out_var = tk.StringVar(value=seconds_to_timestamp(self.default_length))
-        T.entry(outcol, self.out_var, width=8).pack(fill="x", pady=(T.px(7), 0))
+        out_entry = T.entry(outcol, self.out_var, width=8)
+        out_entry.pack(fill="x", pady=(T.px(7), 0))
+        T.tooltip(out_entry.entry, WHOLE_VIDEO_HINT)
 
         # Quick durations: set the end point to in-point + N.
         T.field_label(b, "Clip length from in point").pack(anchor="w", pady=(T.px(16), 0))
@@ -299,6 +310,10 @@ class YeetApp:
                            lambda s=seconds: self.set_length(s),
                            height=38, font=(T.FONT, 10)).pack(
                                side="left", fill="x", expand=True, padx=(0, T.px(8)))
+        entire = T.ghost_button(durations, "Entire", self.set_entire,
+                                height=38, font=(T.FONT, 10))
+        entire.pack(side="left", fill="x", expand=True, padx=(0, T.px(8)))
+        T.tooltip(entire, "Reset both points to 00:00 — downloads the whole video.")
         more = T.ghost_button(durations, "▾", None, height=38, width=44,
                               font=(T.FONT, 11))
         # Assigned after construction so the callback can reference the button
@@ -330,6 +345,7 @@ class YeetApp:
         self.insert_var = tk.StringVar(value="playhead")
         T.Segmented(b3, [("playhead", "Playhead"),
                          ("start", "Start of timeline")], self.insert_var).pack(fill="x")
+
 
         # Actions ----------------------------------------------------------- #
         actions = tk.Frame(root, bg=T.BG)
@@ -523,6 +539,7 @@ class YeetApp:
 
     def _set_status(self, text: str, colour: str) -> None:
         self.root.after(0, lambda: self.status.set(text, colour))
+
 
     # ---- yt-dlp update ----------------------------------------------------- #
 
@@ -776,6 +793,12 @@ class YeetApp:
         self.out_var.set(end)
         self.log(f"Length {seconds_to_timestamp(seconds)} → end point {end}.")
 
+    def set_entire(self) -> None:
+        """Zero both points, which means "no section" — the whole video."""
+        self.in_var.set("00:00")
+        self.out_var.set("00:00")
+        self.log("Both points cleared — the entire video will be downloaded.")
+
     def show_more_lengths(self, button) -> None:
         """Dropdown for the longer presets that don't warrant their own button."""
         menu = tk.Menu(self.root, tearoff=0,
@@ -818,8 +841,12 @@ class YeetApp:
             self.out_var.set(new_end)
             self.log(f"End point moved to {new_end} to keep the range valid.")
 
-    def _collect_job(self) -> tuple[str, str, str] | None:
-        """Validate the form. Returns (url, start, end) or None after logging why."""
+    def _collect_job(self) -> tuple[str, str | None, str | None] | None:
+        """Validate the form. Returns (url, start, end) or None after logging why.
+
+        start/end come back as None for "whole video", which is what both points
+        sitting at zero means.
+        """
         if not self.ytdlp_cmd:
             self.log("ERROR: yt-dlp isn't available yet.")
             return None
@@ -834,8 +861,13 @@ class YeetApp:
         if start is None or end is None:
             self.log("ERROR: in/end point must be SS, MM:SS or HH:MM:SS.")
             return None
+
+        if to_seconds(start) == 0 and to_seconds(end) == 0:
+            return url, None, None          # no section -> entire video
+
         if to_seconds(end) <= to_seconds(start):
-            self.log("ERROR: end point must be after in point.")
+            self.log("ERROR: end point must be after in point "
+                     "(or set both to 00:00 for the whole video).")
             return None
         return url, start, end
 
@@ -1127,7 +1159,7 @@ class YeetApp:
         # "<id>-<ChannelName>-cNNN", numbered from what's already on disk so
         # nothing is ever overwritten.
         stem = naming.next_clip_stem(job_dir, video_id, meta.get("channel", ""))
-        section = f"*{start}-{end}"
+        whole = start is None or end is None
 
         self.log(f"Folder: {os.path.basename(job_dir)}")
         self.log(f"File:   {stem}.mp4")
@@ -1135,8 +1167,6 @@ class YeetApp:
         cmd = [
             *(self.ytdlp_cmd or []),
             url,
-            "--download-sections", section,
-            "--force-keyframes-at-cuts",
             "-f", format_selector(max_height),
             "-S", FORMAT_SORT,
             "--merge-output-format", "mp4",
@@ -1144,10 +1174,19 @@ class YeetApp:
             "-o", os.path.join(job_dir, stem + ".%(ext)s"),
             "--newline",
         ]
+        if not whole:
+            # Section mode: fetch only the requested range, re-encoding around the
+            # cut points so the trim is frame-accurate. Omitted entirely for a
+            # whole-video pull, where there's nothing to cut.
+            cmd[2:2] = ["--download-sections", f"*{start}-{end}",
+                        "--force-keyframes-at-cuts"]
         if self.ffmpeg_path:
             cmd += ["--ffmpeg-location", os.path.dirname(self.ffmpeg_path)]
 
-        self.log(f"Fetching {section} at {self.quality_var.get()}…")
+        if whole:
+            self.log(f"Fetching the entire video at {self.quality_var.get()}…")
+        else:
+            self.log(f"Fetching *{start}-{end} at {self.quality_var.get()}…")
         # yt-dlp spends a moment extracting and selecting formats before any frames
         # arrive, so say what we're actually doing instead of leaving the label
         # on "Reading video info...".

@@ -64,16 +64,21 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 - **Frame-accurate cuts** — uses `--force-keyframes-at-cuts`, so your in/out points
   land where you set them instead of snapping to the nearest keyframe
 - **Flexible timestamps** — type `90`, `1:30` or `00:01:30`, whichever you prefer
-- **⏱️ Clip length shortcuts** — `15s` · `30s` · `1m` buttons plus a dropdown for
-  2 / 5 / 10 min, each setting the end point relative to your in point
+- **📼 Or grab the whole thing** — leave **both** points at `00:00` and the entire
+  video is downloaded, no section trimming. The **Entire** button clears them for you.
+- **⏱️ Clip length shortcuts** — `15s` · `30s` · `90s` · `Entire`, plus a dropdown for
+  2 / 5 / 10 minutes. Each sets the end point relative to your in point.
 - **🔗 Copy in point from link** — paste a YouTube share link with a timestamp
   (`?t=169`) and the in point fills itself in
 
 ### 🎥 Resolve integration
 
 - **Insert at playhead** or at the **start of the timeline**, your choice
-- **Live connection status** — a coloured pill shows the connected project and
-  timeline, and tells you *which* piece is missing when something's wrong
+- **Live connection status** — a tinted pill in the header shows the connected project
+  and timeline, and tells you *which* piece is missing when something's wrong
+  (Resolve absent vs. no project vs. no timeline)
+- **Always lands on the live playhead** — the position is read at the moment of
+  insertion, so you never have to refresh anything first
 - **Launches from Resolve** — appears under `Workspace → Scripts → Utility`
 - **📥 Download only** — skip the timeline entirely and just keep the file; works
   even with Resolve closed
@@ -209,7 +214,8 @@ to run on an unsupported version rather than producing a broken exe, and
 1. In Resolve, open a project and a timeline
 2. **`Workspace → Scripts → Utility → YEETingus`**
 3. Paste a **video link**
-4. Set the **in point** and **end point** — or click a length shortcut like `30s`
+4. Set the **in point** and **end point** — or click a length shortcut like `30s`.
+   Leave both at `00:00` (or press **Entire**) to take the whole video.
 5. Pick a **max quality** (leave it on *Best available* if unsure)
 6. Choose **Playhead** or **Start of timeline**
 7. Hit **YEET (download & insert)** 🚀
