@@ -1,223 +1,479 @@
+<div align="center">
+
+<img src="assets/logo.png" alt="YEETingus" width="130">
+
 # YEETingus
 
-Pull a time-ranged fragment of a YouTube video with
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) and paste it straight onto the current
-DaVinci Resolve timeline — a Resolve equivalent of Yoink for Premiere.
+**Grab any slice of a YouTube video and drop it straight onto your DaVinci Resolve timeline.**
 
-© 2026 Karol Szaciłło (GRApedia)
+Paste a link, set an in and out point, hit one button. No browser, no downloads folder
+shuffling, no manual importing.
+
+![version](https://img.shields.io/badge/version-1.0.0-edff00?style=flat-square&labelColor=1a1a1a)
+![platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square&labelColor=1a1a1a)
+![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
+![python](https://img.shields.io/badge/build%20with-Python%203.6–3.13-3776ab?style=flat-square&labelColor=1a1a1a)
+![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
+
+</div>
 
 ---
 
-## Quick start
+## 📖 Table of contents
 
-```bash
-py -3.13 build.py      # -> dist\YEETingus.exe  (~10 MB, no Python needed to run it)
-py -3.13 install.py    # -> %LOCALAPPDATA%\YEETingus\ + Resolve's Scripts menu
-```
+- [What it does](#-what-it-does)
+- [Features](#-features)
+- [Requirements](#-requirements)
+- [Installation](#-installation)
+- [How to use it](#-how-to-use-it)
+- [Settings](#-settings)
+- [Where clips are saved](#-where-clips-are-saved)
+- [Codecs and smooth playback](#-codecs-and-smooth-playback)
+- [How it works](#-how-it-works)
+- [Troubleshooting](#-troubleshooting)
+- [Known limitations](#-known-limitations)
+- [Legal](#-legal)
+- [License](#-license)
+- [Credits](#-credits)
 
-Restart Resolve, then: **Workspace → Scripts → Utility → YEETingus**.
+---
 
-Run from source instead with `py -3.13 backend\yeet_app.py`, or
-`py -3.13 install.py --dev` to point the menu entry at your source copy.
+## 🎬 What it does
 
-> **Upgrading from "YEET"?** `install.py` handles it: the downloaded tool cache
-> (yt-dlp + ffmpeg) and `settings.json` are moved to the new folder, and the old
-> exe, shim and `YEET.lua` menu entry are deleted so Resolve doesn't list two
-> entries. Nothing is re-downloaded and no settings are lost.
+Editing something that needs a clip of a YouTube video for reference, commentary or
+review? The usual routine is: open a browser, find a downloader, grab the whole
+video, trim it, import it, drag it to the timeline.
 
-## Requirements
+YEETingus collapses that into one window. It downloads **only the seconds you
+asked for** — not the whole video — and hands the clip to Resolve at your playhead.
+
+It's the DaVinci Resolve counterpart to Yoink for Premiere Pro.
+
+> [!NOTE]
+> Add a screenshot or short GIF here — drop it in `assets/` and reference it,
+> e.g. `![screenshot](assets/screenshot.png)`.
+
+---
+
+## ✨ Features
+
+### 🎯 Precise clipping
+
+- **Time-ranged downloads** — only the requested section is fetched, so a 20-second
+  clip from a 3-hour stream takes seconds, not a full download
+- **Frame-accurate cuts** — uses `--force-keyframes-at-cuts`, so your in/out points
+  land where you set them instead of snapping to the nearest keyframe
+- **Flexible timestamps** — type `90`, `1:30` or `00:01:30`, whichever you prefer
+- **⏱️ Clip length shortcuts** — `15s` · `30s` · `1m` buttons plus a dropdown for
+  2 / 5 / 10 min, each setting the end point relative to your in point
+- **🔗 Copy in point from link** — paste a YouTube share link with a timestamp
+  (`?t=169`) and the in point fills itself in
+
+### 🎥 Resolve integration
+
+- **Insert at playhead** or at the **start of the timeline**, your choice
+- **Live connection status** — a coloured pill shows the connected project and
+  timeline, and tells you *which* piece is missing when something's wrong
+- **Launches from Resolve** — appears under `Workspace → Scripts → Utility`
+- **📥 Download only** — skip the timeline entirely and just keep the file; works
+  even with Resolve closed
+
+### 🎛️ Quality control
+
+- **Quality picker** — Best available (default), 2160p, 1440p, 1080p, 720p, 480p
+- **Honest about what exists** — the app reads which resolutions the video actually
+  offers and tells you, instead of failing on a request the video can't satisfy
+- **Smart codec preference** — prefers H.264 (which scrubs smoothly in Resolve)
+  *without* costing you resolution
+- **Real quality readout** — after each clip, the actual resolution, codec and frame
+  rate are reported, read from the file itself rather than assumed
+
+### 🗂️ Sensible file handling
+
+- **Descriptive folders** — `<VIDEO ID> - <title> - <channel>`
+- **Never overwrites** — clips are numbered from what's already on disk, so repeated
+  grabs from the same video pile up safely
+- **Bulletproof names** — emoji, symbols and characters Windows rejects are stripped,
+  while accented and CJK titles stay readable
+- **Configurable location** — point it anywhere you like
+
+### 🧰 Quality of life
+
+- **⏹️ STOP mid-job** — cancels the download, kills the whole process tree and cleans
+  up the partial files
+- **📊 Progress with real percentages** — parsed from the downloader, with clear
+  phases: reading info → downloading → merging → pasting
+- **📜 Collapsible log** — hidden by default, one click to open, and it opens itself
+  automatically if something fails
+- **🔄 Self-updating downloader** — an **Update yt-dlp** button, because YouTube
+  changes things and breakage is a matter of when, not if
+- **📦 Zero-dependency setup** — yt-dlp and ffmpeg are fetched automatically on first
+  run; no Python needed to *run* the app
+
+---
+
+## 📋 Requirements
 
 | | |
 |---|---|
-| DaVinci Resolve **Studio** | running, with a project and timeline open |
-| Scripting enabled | Preferences → System → General → External scripting using → **Local** |
-| Python (to build only) | **3.6–3.13** — see below |
-| yt-dlp + ffmpeg | **fetched automatically on first run** → `%LOCALAPPDATA%\YEETingus\bin` |
-| OS | Windows (the launcher shim, process-tree kill and ffmpeg build are Windows-specific) |
+| 🖥️ **OS** | Windows |
+| 🎬 **DaVinci Resolve** | Studio, running, with a project and timeline open |
+| 🔓 **Scripting enabled** | `Preferences → System → General → External scripting using` → **Local** |
+| 🐍 **Python** | **Only to build it** — 3.6–3.13 (see [note](#the-python-version-constraint)) |
+| 📥 **yt-dlp + ffmpeg** | Fetched automatically on first run |
 
-External scripting is a Studio feature — the free version likely won't work.
+> [!IMPORTANT]
+> Enabling external scripting is not optional — without it, Resolve won't accept
+> connections and the app can't insert anything.
 
-### The Python version constraint
+> [!NOTE]
+> Blackmagic's own scripting docs state the API covers both the free and Studio
+> versions, but external scripting on the free version is untested here. Studio is
+> the supported configuration.
 
-`fusionscript.dll` is a version-specific CPython C extension (no `Py_LIMITED_API`),
-so it only loads into an interpreter matching its ABI. Blackmagic's README claims
-"3.6+", but the real ceiling lags new Python releases until they rebuild it.
+---
 
-Verified against Resolve's June 2026 `fusionscript.dll`:
+## 📦 Installation
+
+There's no installer yet — you build it once, then install it.
+
+```bash
+git clone https://github.com/hajdawery/yeetingus.git
+cd yeetingus
+
+py -3.13 build.py      # creates dist\YEETingus.exe  (~11 MB)
+py -3.13 install.py    # installs it + adds the Resolve menu entry
+```
+
+Then **restart DaVinci Resolve**.
+
+> [!WARNING]
+> Restarting Resolve is required, not optional. Resolve caches the launcher script
+> when it builds the Scripts menu, so until you restart it keeps running the old one.
+
+The installer prints a verification block listing exactly what it wrote, and fails
+loudly if anything is missing rather than claiming success.
+
+<details>
+<summary><b>Running from source instead</b></summary>
+
+```bash
+py -3.13 backend\yeet_app.py          # just run it
+py -3.13 install.py --dev             # or point the Resolve menu entry at your source copy
+```
+
+`--dev` bakes your source path into the launcher, so the menu entry runs your working
+copy with no exe involved. Re-run it if you move the project.
+
+</details>
+
+<details>
+<summary><b>Upgrading from the old "YEET" version</b></summary>
+
+`install.py` handles it automatically. The downloaded tool cache (yt-dlp + ffmpeg) and
+your `settings.json` are moved to the new folder, and the old exe, shim and menu entry
+are deleted so Resolve doesn't list two entries. Nothing is re-downloaded and no
+settings are lost.
+
+</details>
+
+<details id="the-python-version-constraint">
+<summary><b>Why Python 3.6–3.13 (and why it doesn't matter to users)</b></summary>
+
+Resolve's `fusionscript.dll` is a version-specific CPython C extension, so it only
+loads into an interpreter matching its ABI. Blackmagic's docs claim "3.6+", but the
+real ceiling lags new Python releases until they rebuild it.
+
+Tested against Resolve's June 2026 library:
 
 | Python | Result |
 |---|---|
-| 3.11 | imports OK |
-| 3.13 | imports OK |
-| 3.14 | **segfault** |
+| 3.11 | ✅ loads |
+| 3.13 | ✅ loads |
+| 3.14 | ❌ segfault |
 
-The frozen exe embeds whichever interpreter builds it, so **anyone running
-YEETingus.exe needs no Python at all** — the constraint only applies to building and to
-running from source. `build.py` refuses to run on an unsupported version and
-`resolve_bridge.python_is_supported()` guards it at runtime; Settings shows the
-interpreter in use and whether the library was found.
+The built exe **embeds its own interpreter**, so anyone *running* YEETingus needs no
+Python at all. This only affects building and running from source. `build.py` refuses
+to run on an unsupported version rather than producing a broken exe, and
+`resolve_bridge.MAX_PY` is the single constant to bump once a newer Python works.
 
-`resolve_bridge.MAX_PY` is the single source of truth. To raise it, confirm
-`py -3.X -c "import DaVinciResolveScript"` exits 0 (rather than crashing), then
-bump that one constant.
+</details>
 
-## How it works
+---
 
-One standalone app; no server, no port. It drives yt-dlp and talks to Resolve
-through Resolve's **official external Python scripting API**:
+## 🚀 How to use it
 
-```
-  Resolve  Workspace > Scripts > Utility > YEETingus
-      |  YEETingus.lua spawns the app (never blocks Resolve)
-      v
-  YEETingus.exe  (Tkinter UI)
-      |-- subprocess --> yt-dlp + ffmpeg     (downloads only the requested section)
-      '-- import ------> resolve_bridge.py --> fusionscript.dll
-                                                    |
-                                              DaVinci Resolve
-                                       (media pool import + timeline insert)
-```
+1. In Resolve, open a project and a timeline
+2. **`Workspace → Scripts → Utility → YEETingus`**
+3. Paste a **video link**
+4. Set the **in point** and **end point** — or click a length shortcut like `30s`
+5. Pick a **max quality** (leave it on *Best available* if unsure)
+6. Choose **Playhead** or **Start of timeline**
+7. Hit **YEET (download & insert)** 🚀
 
-Three non-obvious things the launcher has to get right — each caused a silent
-"clicking the menu does nothing" failure at some point:
+The clip lands on your timeline, and the log recaps the video title, channel and real
+resolution.
 
-1. **No environment variables.** Resolve's embedded Lua doesn't reliably expose
-   `%LOCALAPPDATA%`, so `install.py` bakes absolute paths into the launcher from
-   `resolve/YEETingus.lua.in`. (AutoSubs hardcodes its paths for the same reason.)
-2. **Launch via LuaJIT FFI `ShellExecuteA`**, not `os.execute` — the latter is
-   unreliable in Resolve's Lua host.
-3. **Launch the `.bat`, not the `.exe`.** Resolve exports `PYTHONHOME`, and a
-   PyInstaller exe that inherits it segfaults instantly. `launch_yeetingus.bat` clears
-   it first.
+**Just want the file?** Use **Download only** — same pipeline, no timeline, works with
+Resolve closed.
 
-Resolve caches the launcher when it builds the Scripts menu, so **restart Resolve
-after reinstalling**. Diagnostics land in `%LOCALAPPDATA%\YEETingus\launcher.log`.
+**Changed your mind?** The main button becomes a red **STOP** while a job runs.
 
-## UI
+---
 
-- **1 Source** — video link, in point, end point (`SS`, `MM:SS`, `HH:MM:SS`), plus:
-  - **Clip length** shortcuts — `15s` · `30s` · `1m`, and a `▾` dropdown with
-    2 / 5 / 10 min. Each sets the end point to the in point plus that length.
-  - **Copy in point from link** — reads a share link's `?t=` value
-    (`169`, `169s`, `2m49s`, `1h2m3s`, `start=`, `#t=`)
-- **2 Max quality** — Best available (default) / 2160p / 1440p / 1080p / 720p / 480p.
-  The metadata probe logs which resolutions the video actually has; asking for more
-  than it offers falls back to its best instead of failing.
-- **3 Insert clip by** — Playhead, or Start of timeline
-- **YEET (download & insert)** — becomes a red **STOP** while running: kills yt-dlp
-  *and its ffmpeg children* and deletes partials so the clip number stays free.
-- **Open folder** · **Show log** · **Settings**
-- **Progress** — `Reading video info` → `Preparing download` → `Downloading NN%`
-  → `Merging & trimming` → `Pasting into timeline`
-- **Log** — collapsed by default; **Show log** expands it (and grows the window to
-  fit, so it's never hidden behind a resize). It keeps recording while collapsed,
-  and opens itself automatically on failure. Live yt-dlp output; after each paste
-  it recaps the video title, channel and true resolution/codec/fps, flags a
-  slow-decoding codec if there is one, then a highlighted credit reminder.
-- **Header** — status pill: accent = connected (`project · timeline`), red =
-  Resolve missing / no project / no timeline. `↻` re-checks.
+## ⚙️ Settings
 
-### Settings
+Stored in `%LOCALAPPDATA%\YEETingus\settings.json`, written atomically and preserved
+across reinstalls.
 
-`%LOCALAPPDATA%\YEETingus\settings.json`, written atomically and preserved across
-reinstalls (install.py only replaces the exe and launcher).
+- 📁 **Clip storage folder** — with a Browse picker
+- 🧰 **Tools** — the resolved yt-dlp and ffmpeg paths and versions
+- 🩺 **Resolve diagnostics** — the detected scripting library and Python version, in red
+  if either is wrong. This is the first thing to check on a new machine.
+- 🔄 **Update yt-dlp** — self-updates the downloader
 
-- **Clip storage** folder, with a Browse picker
-- **Tools** — resolved yt-dlp/ffmpeg paths, the detected Resolve library and
-  Python version, and an **Update yt-dlp** button (`-U` on the standalone binary,
-  or a pip upgrade when running from source)
+---
 
-## Where clips land
+## 📁 Where clips are saved
 
 ```
 %TEMP%\yeet_downloads\
-  dQw4w9WgXcQ - Rick Astley - Never Gonna Give You Up (4K Remaster) - Rick Astley\
-      dQw4w9WgXcQ-RickAstley-c001.mp4
-      dQw4w9WgXcQ-RickAstley-c002.mp4
+└── dQw4w9WgXcQ - Rick Astley - Never Gonna Give You Up (4K Remaster) - Rick Astley\
+    ├── dQw4w9WgXcQ-RickAstley-c001.mp4
+    └── dQw4w9WgXcQ-RickAstley-c002.mp4
 ```
 
-Folder is `<VIDEO ID> - <title> - <channel>` (readable, spaces kept). Files are
-`<videoid>-<ChannelName>-cNNN` — the channel is squashed to a single token with
-spaces and punctuation stripped (`Rick Astley` → `RickAstley`, capped at 32 chars)
-so the filename has exactly three `-`-separated fields. Numbering comes from what's
-already on disk, so **nothing is ever overwritten**. If the channel is unknown the
-segment is dropped: `<videoid>-cNNN`.
+**Folders** are `<VIDEO ID> - <title> - <channel>` and stay human-readable.
 
-Names are sanitised for every OS: letters, digits, marks and a small punctuation
-whitelist survive — accented and CJK titles stay readable while emoji, symbols,
-control characters and `<>:"/\|?*` are dropped. Reserved Windows names (`CON`,
-`NUL`, …) get prefixed, trailing dots/spaces stripped, lengths capped.
+**Files** are `<videoid>-<ChannelName>-cNNN`, with the channel squashed into one token
+(`Rick Astley` → `RickAstley`, capped at 32 characters) so every filename has exactly
+three `-`-separated fields.
 
-If a title or channel is made **entirely** of characters we strip (an all-emoji
-title, say), that field becomes **`unnamed`** rather than vanishing —
-`emo01 - unnamed - unnamed\emo01-unnamed-c001.mp4`. A field we simply never had
-(metadata probe failed) is still omitted instead, so `unnamed` always means "there
-was a name, but nothing in it was usable".
+Numbering is derived from what's already on disk, so **nothing is ever overwritten** —
+even across restarts, or if you delete clips by hand.
 
-Downloads use `--download-sections "*IN-END" --force-keyframes-at-cuts`, so trims
-are frame-accurate rather than snapping to the nearest keyframe.
+<details>
+<summary><b>How names are sanitised</b></summary>
 
-## Codecs and smooth playback
+Letters, digits and accent marks survive; spaces, punctuation, emoji, control
+characters and every byte Windows forbids (`<>:"/\|?*`) are stripped. Reserved names
+(`CON`, `NUL`, …) are escaped, trailing dots and spaces removed, lengths capped.
 
-YEETingus asks yt-dlp to sort formats by resolution first, then prefer **H.264**
+| Original | Becomes |
+|---|---|
+| `Rick Astley` | `RickAstley` |
+| `GameBro™ 🎮` | `GameBroTM` |
+| `Kanał Polski` | `KanałPolski` |
+| `日本語チャンネル` | `日本語チャンネル` |
+| `🔥🔥🔥` | `unnamed` |
+
+If a title or channel is made **entirely** of stripped characters, it becomes
+`unnamed` rather than disappearing. A field that was never known (metadata lookup
+failed) is omitted instead — so `unnamed` always means "there was a name, but none of
+it was usable".
+
+</details>
+
+---
+
+## 🎥 Codecs and smooth playback
+
+YEETingus sorts formats by resolution first, then prefers **H.264**
 (`-S res,vcodec:h264`). H.264 hardware-decodes and scrubs well in Resolve; VP9 is
-worse and AV1 is considerably worse.
+worse and AV1 noticeably worse.
 
-The catch is what YouTube actually offers:
+The catch is what YouTube actually serves:
 
 | Resolution | Codecs available |
 |---|---|
 | 2160p / 1440p | VP9, AV1 only |
-| 1080p and below | **H.264**, VP9, AV1 |
+| 1080p and below | ✅ **H.264**, VP9, AV1 |
 
-So anything at 1080p or below arrives as H.264 and plays back fine. At 1440p/4K
-there is no H.264 to choose — you necessarily get VP9 or AV1.
+So anything at 1080p or below arrives as H.264 and plays back smoothly. At 1440p/4K
+there is no H.264 to choose.
 
-The sort order matters here: preference must not cost resolution. A naive
-"H.264 else anything" fallback would silently cap **Best available** at 1080p,
-since that's as high as YouTube's H.264 goes. Sorting keeps 4K at 4K.
+> [!TIP]
+> **If a 1440p/4K clip stutters**, use Resolve's own proxies: right-click the clip in
+> the Media Pool → **Generate Optimized Media**. Resolve manages that cache and swaps
+> proxies in transparently, which beats anything this tool could do — and avoids the
+> 10–45× disk cost of writing intermediate copies. The log points this out whenever a
+> clip isn't H.264.
 
-**If a 1440p/4K clip stutters**, use Resolve's own proxies rather than expecting
-the app to transcode: right-click the clip in the Media Pool → **Generate Optimized
-Media** (or set the format under Project Settings → Master Settings → Optimized
-Media). Resolve manages that cache and swaps proxies in transparently, which beats
-anything this tool could do — and avoids the 10–45× disk cost of writing DNxHR
-copies (measured: 1080p H.264 ≈ 29 MB/min, DNxHR LB ≈ 280, SQ ≈ 877, HQ ≈ 1323).
+The sort order matters: a naive "H.264 else anything" preference would silently cap
+*Best available* at 1080p, since that's as high as YouTube's H.264 goes.
 
-The log points this out when it applies: after a paste, if the clip isn't H.264 it
-names the codec and suggests Generate Optimized Media.
+---
 
-## Layout
+## 🧠 How it works
+
+One standalone app — no server, no port, nothing listening.
+
+```
+  DaVinci Resolve   Workspace → Scripts → Utility → YEETingus
+        │
+        │  YEETingus.lua spawns the app (never blocks Resolve)
+        ▼
+  YEETingus.exe  ── subprocess ──▶  yt-dlp + ffmpeg   (fetch just the section)
+        │
+        └── Resolve's official external Python scripting API
+                    │
+                    ▼
+            media pool import + timeline insert
+```
+
+<details>
+<summary><b>Three launcher details that each caused a silent failure</b></summary>
+
+Documented in `resolve/YEETingus.lua.in`, because each one cost real debugging time:
+
+1. **No environment variables.** Resolve's embedded Lua host doesn't reliably expose
+   `%LOCALAPPDATA%`, so `install.py` bakes absolute paths into the launcher. When
+   `os.getenv` returned nil, every path broke and clicking the menu item did nothing
+   at all — not even a log line.
+2. **Launch via LuaJIT FFI `ShellExecuteA`**, not `os.execute`. The latter is
+   unreliable inside Resolve's Lua host, though it works fine standalone — which
+   makes it especially misleading to test.
+3. **Launch the `.bat`, not the `.exe`.** Resolve exports `PYTHONHOME` for its own
+   scripting, and a PyInstaller exe that inherits it segfaults instantly.
+   `launch_yeetingus.bat` clears those variables first.
+
+</details>
+
+<details>
+<summary><b>Project layout</b></summary>
 
 | Path | Role |
 |---|---|
-| `backend/yeet_app.py` | UI + orchestration |
-| `backend/theme.py` | palette, rounded cards/buttons, vector icons |
-| `backend/deps.py` | finds or downloads yt-dlp & ffmpeg |
-| `backend/naming.py` | filesystem-safe names, URL parsing |
-| `backend/config.py` | persisted settings |
-| `backend/resolve_bridge.py` | Resolve import + timeline insert |
-| `backend/version.py` | version + authorship |
+| `backend/yeet_app.py` | UI and orchestration |
+| `backend/theme.py` | Palette, rounded cards/buttons, vector icons |
+| `backend/deps.py` | Finds or downloads yt-dlp and ffmpeg |
+| `backend/naming.py` | Filesystem-safe names, URL parsing |
+| `backend/config.py` | Persisted settings |
+| `backend/resolve_bridge.py` | Resolve import and timeline insert |
+| `backend/version.py` | Name, version, authorship |
 | `resolve/YEETingus.lua.in` | Scripts-menu launcher template |
-| `resolve/launch_yeetingus.bat` | clears `PYTHONHOME` before starting the exe |
-| `build.py` / `install.py` | freeze / install |
+| `resolve/launch_yeetingus.bat` | Clears `PYTHONHOME` before starting the exe |
+| `build.py` / `install.py` | Freeze / install |
 
-## Known limitations
+`resolve_bridge.py` is the only Resolve-specific module, so porting to another NLE
+means writing one new adapter rather than restructuring the app.
 
-- **Drop-frame timecode** — playhead placement uses non-drop-frame math, so
-  29.97/59.94 timelines may be off by a frame or two.
-- **No transcode on ingest** — deliberate. H.264 is preferred where it exists, and
-  Resolve's Generate Optimized Media handles the 1440p/4K VP9/AV1 case better than
-  a bundled DNxHR pass would. See *Codecs and smooth playback*.
-- **yt-dlp breakage** — YouTube changes extraction periodically; use
-  **Update yt-dlp** in Settings.
-- **No app icon** — `build.py` picks up `assets\yeet.ico` if you add one.
+</details>
 
-## Legal
+---
 
-Downloading YouTube video violates YouTube's Terms of Service. This is a private
-reference/editing convenience tool; think carefully before using pulled footage in
-published work, and credit sources.
+## 🩺 Troubleshooting
 
-ffmpeg is **downloaded, not redistributed** (from yt-dlp's FFmpeg-Builds), which
-keeps its GPL obligations out of this package. yt-dlp is public domain (Unlicense).
+<details>
+<summary><b>The menu entry does nothing when clicked</b></summary>
+
+1. **Restart Resolve.** It caches the launcher when building the Scripts menu.
+2. Check `%LOCALAPPDATA%\YEETingus\launcher.log`:
+   - **New lines appear** → the launcher ran; the log names which launch mechanism
+     failed and why
+   - **No new lines** → Resolve isn't executing the file at all, which points at the
+     script's location rather than its contents
+3. Re-run `py -3.13 install.py` and read its verification block.
+
+</details>
+
+<details>
+<summary><b>"Resolve not connected" / no project or timeline</b></summary>
+
+- Resolve must be **running**, with a **project and a timeline open**
+- `Preferences → System → General → External scripting using` must be **Local**
+- Open **Settings** in the app — the Resolve diagnostic line shows whether the
+  scripting library was found and whether the interpreter is supported
+- Click `↻` next to the status pill to re-check
+
+The status pill distinguishes "Resolve isn't there" from "Resolve is there but has
+nothing open", because those need different fixes.
+
+</details>
+
+<details>
+<summary><b>Download fails with HTTP 403</b></summary>
+
+YouTube refused that specific format's URL — it's not about the resolution. Try
+**Best available**, then **Update yt-dlp** in Settings. Extraction breaks periodically
+as YouTube changes, and a newer yt-dlp is the usual cure.
+
+</details>
+
+<details>
+<summary><b>Requested 4K but got 1080p</b></summary>
+
+Working as intended. The video didn't offer 4K, so it fell back to the best available
+and said so in the log, rather than failing.
+
+</details>
+
+<details>
+<summary><b>Playback stutters on a 4K clip</b></summary>
+
+That'll be VP9 or AV1 — YouTube has no H.264 above 1080p. Right-click the clip in the
+Media Pool → **Generate Optimized Media**.
+
+</details>
+
+---
+
+## 🚧 Known limitations
+
+- ⏱️ **Drop-frame timecode** — playhead placement uses non-drop-frame maths, so
+  29.97/59.94 timelines may be off by a frame or two
+- 🪟 **Windows only** — the launcher shim, process-tree kill and ffmpeg build are
+  Windows-specific
+- 🎞️ **No transcode on ingest** — deliberate; see
+  [Codecs and smooth playback](#-codecs-and-smooth-playback)
+- 🔄 **No auto-update yet** — the app doesn't check for new versions of itself
+- 📼 **YouTube only** — yt-dlp supports hundreds of sites, but nothing else is tested
+
+---
+
+## ⚖️ Legal
+
+> [!CAUTION]
+> Downloading YouTube videos violates YouTube's Terms of Service, regardless of the
+> legality of the tools involved. This is a private reference and editing convenience
+> tool. Think carefully before using pulled footage in published work — and **credit
+> your sources**. The app reminds you every time for a reason.
+
+**Third-party tools** are downloaded on first run, not redistributed here:
+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — public domain (Unlicense)
+- [ffmpeg](https://ffmpeg.org/) — via
+  [yt-dlp's builds](https://github.com/yt-dlp/FFmpeg-Builds); fetching rather than
+  bundling keeps its GPL obligations out of this package
+
+---
+
+## 📄 License
+
+Released under the **[MIT License](LICENSE)** — do what you like with it, including
+commercially, as long as the copyright notice and licence text come along. It comes
+with no warranty.
+
+Note that the MIT licence covers **this code**. It says nothing about the content you
+download with it — see [Legal](#-legal).
+
+---
+
+## 🙏 Credits
+
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — does all the heavy lifting
+- **[ffmpeg](https://ffmpeg.org/)** — trimming and merging
+- **[AutoSubs](https://github.com/tmoroney/auto-subs)** — the reference for how a
+  Resolve plugin can live outside Resolve's own UI. Reading its source solved two
+  problems that had me stuck.
+- **Blackmagic Design** — for shipping a scripting API at all
+
+---
+
+<div align="center">
+
+**© 2026 Karol Szaciłło (GRApedia)**
+
+Made for editors who are tired of the download-trim-import shuffle.
+
+</div>
