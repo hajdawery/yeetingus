@@ -262,7 +262,7 @@ class YeetApp:
         mark.pack(side="left")
         tk.Label(mark, text=APP_NAME, bg=T.BG, fg=T.ACCENT,
                  font=(T.FONT, 24, "bold")).pack(side="left")
-        tk.Label(mark, text=f"  v{__version__}   youtube → timeline", bg=T.BG,
+        tk.Label(mark, text=f"  v{__version__}", bg=T.BG,
                  fg=T.MUTED, font=(T.FONT, 10)).pack(side="left", pady=(T.px(10), 0))
 
         right = tk.Frame(header, bg=T.BG)
@@ -1118,6 +1118,32 @@ class YeetApp:
         return label + ")"
 
     @staticmethod
+    def _existing_download(folder: str, stem: str) -> str | None:
+        """A finished download for `stem`, or None.
+
+        Skips yt-dlp's scratch files and zero-byte remnants, so an interrupted
+        attempt is never mistaken for a complete one — that would insert a broken
+        file instead of re-downloading.
+        """
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return None
+        # Prefer the merged mp4, then any other container.
+        for name in sorted(names, key=lambda n: (not n.endswith(".mp4"), n)):
+            if not name.startswith(stem + "."):
+                continue
+            if name.endswith((".part", ".ytdl", ".temp")):
+                continue
+            path = os.path.join(folder, name)
+            try:
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    return path
+            except OSError:
+                continue
+        return None
+
+    @staticmethod
     def _scrubs_poorly(codec: str) -> bool:
         """VP9 and AV1 decode slowly in Resolve; H.264 hardware-decodes.
 
@@ -1250,10 +1276,25 @@ class YeetApp:
         # "<ID> - <title> - <channel>", sanitised for any OS.
         job_dir = naming.ensure_clip_folder(
             self.download_dir, video_id, meta.get("title", ""), meta.get("channel", ""))
-        # "<id>-<ChannelName>-cNNN", numbered from what's already on disk so
-        # nothing is ever overwritten.
-        stem = naming.next_clip_stem(job_dir, video_id, meta.get("channel", ""))
         whole = start is None or end is None
+        channel = meta.get("channel", "")
+
+        if whole:
+            # One fixed name per video, so a repeat request can reuse it.
+            stem = naming.full_stem(video_id, channel)
+            existing = self._existing_download(job_dir, stem)
+            if existing:
+                self.log(f"Already downloaded — reusing {os.path.basename(existing)}")
+                described = self._describe_stream(self._probe_stream(existing))
+                if described:
+                    self.log(f"  {described}")
+                self.log("  Delete that file to download it again.")
+                self._progress(P_DOWNLOAD, "Using existing download…")
+                return existing
+        else:
+            # "<id>-<ChannelName>-cNNN", numbered from what's already on disk so
+            # nothing is ever overwritten.
+            stem = naming.next_clip_stem(job_dir, video_id, channel)
 
         self.log(f"Folder: {os.path.basename(job_dir)}")
         self.log(f"File:   {stem}.mp4")

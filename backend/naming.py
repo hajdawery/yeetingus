@@ -158,6 +158,18 @@ def clip_prefix(video_id: str, channel: str = "") -> str:
     return f"{vid}-{chan}-c" if chan else f"{vid}-c"
 
 
+def full_stem(video_id: str, channel: str = "") -> str:
+    """Filename stem for a whole-video download: "<id>-<ChannelName>-full".
+
+    Unnumbered on purpose — there is only ever one "entire video" per id, so a
+    fixed name lets a repeat request find and reuse it instead of downloading
+    the same thing again.
+    """
+    vid = safe_component(video_id, 40) or "unknown-id"
+    chan = compact_token(channel)
+    return f"{vid}-{chan}-full" if chan else f"{vid}-full"
+
+
 def next_clip_stem(folder: str, video_id: str, channel: str = "") -> str:
     """Return "<id>-<ChannelName>-cNNN" using the lowest free number in `folder`.
 

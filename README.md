@@ -68,8 +68,13 @@ Built for DaVinci Resolve, where no equivalent tool existed.
   video is downloaded, no section trimming. The **Entire** button clears them for you.
 - **⏱️ Clip length shortcuts** — `15s` · `30s` · `90s` · `Entire`, plus a dropdown for
   2 / 5 / 10 minutes. Each sets the end point relative to your in point.
-- **🔗 Copy in point from link** — paste a YouTube share link with a timestamp
-  (`?t=169`) and the in point fills itself in
+- **🔗 Timestamps detected automatically** — paste a share link with a `?t=` value and
+  the in point fills itself in, no button press. `169`, `169s`, `2m49s`, `1h2m3s`,
+  `start=` and `#t=` are all understood. **Copy in point from link** remains as a
+  manual override.
+- **🪄 The end point follows** — type an in point and click away (or press Enter) and
+  the end is set to your [default clip length](#-settings). It only recalculates when
+  the in point actually changed, so an end point you set deliberately is never wiped.
 
 ### 🎥 Resolve integration
 
@@ -98,9 +103,14 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 - **Descriptive folders** — `<VIDEO ID> - <title> - <channel>`
 - **Never overwrites** — clips are numbered from what's already on disk, so repeated
   grabs from the same video pile up safely
+- **♻️ Whole videos are reused** — a full download is saved once as `…-full` and a
+  repeat request returns instantly instead of fetching it again. Interrupted
+  attempts are never mistaken for finished ones.
 - **Bulletproof names** — emoji, symbols and characters Windows rejects are stripped,
   while accented and CJK titles stay readable
-- **Configurable location** — point it anywhere you like
+- **Saved somewhere sensible** — your **Videos** folder by default (not `%TEMP%`,
+  which the OS may empty), configurable with a **Reset** button to get the default
+  back
 
 ### 🧰 Quality of life
 
@@ -113,6 +123,8 @@ Built for DaVinci Resolve, where no equivalent tool existed.
   while hidden, and opens itself automatically if something fails
 - **🖥️ Scales with your display** — reads the system DPI, so the whole UI stays
   proportionate on 1080p and 4K alike rather than shrinking to a postage stamp
+- **🌒 Dark title bar** — the native Windows title bar is themed to match, instead of
+  a white strip above a near-black window
 - **🔄 Self-updating downloader** — an **Update yt-dlp** button, because YouTube
   changes things and breakage is a matter of when, not if
 - **📦 Zero-dependency setup** — yt-dlp and ffmpeg are fetched automatically on first
@@ -213,9 +225,11 @@ to run on an unsupported version rather than producing a broken exe, and
 
 1. In Resolve, open a project and a timeline
 2. **`Workspace → Scripts → Utility → YEETingus`**
-3. Paste a **video link**
-4. Set the **in point** and **end point** — or click a length shortcut like `30s`.
-   Leave both at `00:00` (or press **Entire**) to take the whole video.
+3. Paste a **video link** — if it carries a `?t=` timestamp, the in point fills
+   itself in and the end point follows
+4. Otherwise set the **in point** (the end follows your default length) or click a
+   length shortcut like `30s`. Leave both at `00:00` — or press **Entire** — to take
+   the whole video.
 5. Pick a **max quality** (leave it on *Best available* if unsure)
 6. Choose **Playhead** or **Start of timeline**
 7. Hit **YEET (download & insert)** 🚀
@@ -265,6 +279,12 @@ three `-`-separated fields.
 
 Numbering is derived from what's already on disk, so **nothing is ever overwritten** —
 even across restarts, or if you delete clips by hand.
+
+**Whole-video downloads** get a fixed name instead of a number —
+`<videoid>-<ChannelName>-full` — because there's only ever one of them per video.
+Asking for the same video again **reuses the existing file** rather than downloading
+it twice, so the second request is instant. Delete the file to force a fresh
+download. An interrupted attempt is never mistaken for a finished one.
 
 <details>
 <summary><b>How names are sanitised</b></summary>
@@ -449,8 +469,11 @@ Media Pool → **Generate Optimized Media**.
 - 🎞️ **No transcode on ingest** — deliberate; see
   [Codecs and smooth playback](#-codecs-and-smooth-playback)
 - 🔄 **No auto-update yet** — the app doesn't check for new versions of itself
-- 📼 **Mostly YouTube** — **Twitch clips work too** (tested). yt-dlp supports hundreds
-  of sites, so others may well work, but nothing beyond those two is verified
+- 📼 **Mostly YouTube** — **Twitch clips work too** (tested). Downloading is handled by
+  yt-dlp, which supports
+  [hundreds of sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md),
+  so plenty of others will likely work — but nothing beyond those two is verified,
+  and site-specific quirks (timestamp formats, resolution options) may differ
 - 🔒 **Age-restricted videos fail** — they need a signed-in session, so the download is
   refused with HTTP 403
 
@@ -486,7 +509,9 @@ download with it — see [Legal](#-legal).
 
 ## 🙏 Credits
 
-- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — does all the heavy lifting
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — does all the heavy lifting, and
+  brings [support for hundreds of sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+  with it
 - **[ffmpeg](https://ffmpeg.org/)** — trimming and merging
 - **[AutoSubs](https://github.com/tmoroney/auto-subs)** — the reference for how a
   Resolve plugin can live outside Resolve's own UI. Reading its source solved two
