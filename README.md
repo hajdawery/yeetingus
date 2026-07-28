@@ -51,7 +51,7 @@ asked for** — not the whole video — and hands the clip to Resolve at your pl
 Built for DaVinci Resolve, where no equivalent tool existed.
 
 <div align="center">
-  <img src="assets/screenshot.jpg" alt="YEETingus window" width="420">
+  <img src="assets/screenshot.jpg" alt="The YEETingus window, with the log panel open" width="760">
 </div>
 
 ---
