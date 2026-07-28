@@ -35,6 +35,7 @@ shuffling, no manual importing.
 - [Known limitations](#-known-limitations)
 - [Legal](#-legal)
 - [License](#-license)
+- [How this was built](#-how-this-was-built)
 - [Credits](#-credits)
 
 ---
@@ -581,6 +582,29 @@ Two things the MIT licence does **not** cover:
   additionally contains a Python interpreter and its libraries, under their own
   licences. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) before
   redistributing a build.
+
+---
+
+## 🤖 How this was built
+
+**This was vibecoded — built with heavy use of [Claude](https://claude.ai).** Saying
+so up front, because someone will work it out and I'd rather they hear it from me.
+
+What that does and doesn't mean:
+
+- **It was built to solve a real problem I had**, not as an AI demo. Every feature
+  exists because editing without it annoyed me.
+- **It was tested against a real DaVinci Resolve install** throughout. The awkward
+  parts — the Resolve launcher, DPI scaling, filename sanitising, the download
+  pipeline — were worked out by running them and reading the failures, not by
+  assuming they'd work.
+- **The whole source is here.** Nothing is obfuscated or minified. Judge it by
+  reading it rather than by how it was written.
+- **Bugs are mine.** If something breaks, open an issue — "the AI wrote it" is not
+  an excuse and I'm not offering it as one.
+
+If that's a dealbreaker for you, that's a fair position and no hard feelings. If it
+isn't, the tool works and I hope it saves you the same faff it saves me.
 
 ---
 
