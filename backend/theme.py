@@ -73,11 +73,13 @@ def px(value: float) -> int:
 
 
 def set_scale(factor: float) -> None:
+    """Set the pixel scale. Call before building widgets; clamped to 1.0-3.0."""
     global _SCALE
     _SCALE = max(1.0, min(3.0, float(factor)))
 
 
 def get_scale() -> float:
+    """The pixel scale currently in effect."""
     return _SCALE
 
 
@@ -169,6 +171,7 @@ class Card(tk.Frame):
 
 
 def step_header(parent, number: int, title: str, *, bg: str = CARD) -> tk.Frame:
+    """A numbered accent badge followed by a section title."""
     row = tk.Frame(parent, bg=bg)
     size = px(27)
     cv = tk.Canvas(row, width=size, height=size, bg=bg, highlightthickness=0,
@@ -183,6 +186,7 @@ def step_header(parent, number: int, title: str, *, bg: str = CARD) -> tk.Frame:
 
 
 def field_label(parent, text: str, *, bg: str = CARD) -> tk.Label:
+    """Small muted caption sitting above an input."""
     return tk.Label(parent, text=text, bg=bg, fg=MUTED, font=(FONT, 10))
 
 
@@ -325,6 +329,7 @@ class RoundButton(tk.Canvas):
 
 
 def ghost_button(parent, text: str, command=None, **kw) -> RoundButton:
+    """A RoundButton styled as a secondary action: outlined, not filled."""
     kw.setdefault("fill", INPUT)
     kw.setdefault("fg", TEXT)
     kw.setdefault("outline", BORDER)

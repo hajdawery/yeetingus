@@ -2,7 +2,8 @@
 naming.py — filesystem-safe names for downloaded clips.
 
 Folder:  "<VIDEO ID> - <video title> - <channel name>"
-File:    "<videoid>-clip-001.mp4"   (sequential, never overwrites)
+Clip:    "<videoid>-<ChannelName>-c001.mp4"  (numbered, never overwrites)
+Full:    "<videoid>-<ChannelName>-full.mp4"  (fixed name, so it can be reused)
 
 Sanitising rule: keep letters, digits, combining marks and a small punctuation
 whitelist; drop everything else. That preserves accented text (Zażółć, Kraków,

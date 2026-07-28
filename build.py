@@ -25,6 +25,8 @@ ENTRY = os.path.join(HERE, "backend", "yeet_app.py")
 sys.path.insert(0, os.path.join(HERE, "backend"))
 from version import APP_NAME as NAME  # noqa: E402
 
+INSTALLER_NAME = f"Install-{NAME}"
+
 
 def main() -> int:
     # The supported range lives in resolve_bridge so there's one place to bump.
@@ -95,7 +97,66 @@ def main() -> int:
 
     size = os.path.getsize(exe) / 1048576
     print(f"\nBuilt {exe}  ({size:.1f} MB)")
-    print("Next:  py -3.13 install.py    (copies it into place + adds the Resolve menu entry)")
+
+    if "--no-installer" in sys.argv:
+        print("Next:  py -3.13 install.py    (copies it into place + adds the menu entry)")
+        return 0
+
+    rc = build_installer(exe, icon)
+    if rc != 0:
+        return rc
+
+    print("\nNext:  run dist\\%s to install, or `py -3.13 install.py` from here."
+          % (INSTALLER_NAME + ".exe"))
+    return 0
+
+
+def build_installer(app_exe: str, icon: str) -> int:
+    """Freeze install.py into a single self-contained installer.
+
+    The app exe, the launch shim and the launcher template are bundled inside it,
+    so what ships is one file that needs no Python — the same logic already used
+    for dev installs, rather than a second implementation that could drift.
+    """
+    print("\n--- installer ---")
+    data = [
+        (app_exe, "."),
+        (os.path.join(HERE, "resolve", f"launch_{NAME.lower()}.bat"), "."),
+        (os.path.join(HERE, "resolve", f"{NAME}.lua.in"), "."),
+        (os.path.join(HERE, "backend", "version.py"), "."),
+    ]
+    missing = [src for src, _ in data if not os.path.isfile(src)]
+    if missing:
+        for m in missing:
+            print(f"ERROR: missing {m}")
+        return 1
+
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm", "--clean",
+        "--onefile",
+        "--console",                  # the verification block is the point
+        "--name", INSTALLER_NAME,
+        "--exclude-module", "tkinter",   # the installer has no UI
+        "--exclude-module", "numpy",
+        "--exclude-module", "pytest",
+        "--exclude-module", "setuptools",
+    ]
+    for src, dest in data:
+        cmd += ["--add-data", f"{src}{os.pathsep}{dest}"]
+    if os.path.isfile(icon):
+        cmd += ["--icon", icon]
+    cmd.append(os.path.join(HERE, "install.py"))
+
+    result = subprocess.run(cmd, cwd=HERE)
+    if result.returncode != 0:
+        return result.returncode
+
+    out = os.path.join(HERE, "dist", INSTALLER_NAME + ".exe")
+    if not os.path.isfile(out):
+        print(f"ERROR: installer build reported success but {out} is missing.")
+        return 1
+    print(f"Built {out}  ({os.path.getsize(out) / 1048576:.1f} MB)")
     return 0
 
 

@@ -482,17 +482,37 @@ Media Pool → **Generate Optimized Media**.
 ## ⚖️ Legal
 
 > [!CAUTION]
-> Downloading YouTube videos violates YouTube's Terms of Service, regardless of the
-> legality of the tools involved. This is a private reference and editing convenience
-> tool. Think carefully before using pulled footage in published work — and **credit
-> your sources**. The app reminds you every time for a reason.
+> **Downloading videos generally violates the terms of service of the sites you
+> download from**, regardless of whether the tools themselves are legal. Copyright
+> in the video belongs to whoever made it, and "it was on the internet" is not a
+> licence. Fair dealing / fair use for commentary, criticism, review or teaching is
+> a real thing, but it is **narrow, jurisdiction-specific, and decided after the
+> fact** — not something a tool can grant you.
+>
+> You are responsible for what you download and what you publish. **Credit your
+> sources** — the app reminds you every time for a reason.
 
-**Third-party tools** are downloaded on first run, not redistributed here:
+**Nothing third-party is redistributed by this project.** yt-dlp and ffmpeg are
+downloaded from their own official release pages on first run, into your own
+application-data folder.
 
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — public domain (Unlicense)
-- [ffmpeg](https://ffmpeg.org/) — via
-  [yt-dlp's builds](https://github.com/yt-dlp/FFmpeg-Builds); fetching rather than
-  bundling keeps its GPL obligations out of this package
+The **built `.exe`** is a different matter: PyInstaller embeds a Python interpreter
+and its libraries, so anyone redistributing that binary redistributes those too.
+Everything involved — what's embedded, what's downloaded, trademarks, and exactly
+what network connections the app makes — is set out in
+**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**.
+
+**No telemetry.** No analytics, no update check, no account. The only outbound
+connections are fetching yt-dlp/ffmpeg on first run, and yt-dlp contacting the site
+whose link you pasted.
+
+### Not affiliated
+
+DaVinci Resolve and Blackmagic Design are trademarks of Blackmagic Design Pty. Ltd.
+YouTube is a trademark of Google LLC; Twitch of Twitch Interactive, Inc. This is an
+independent, unofficial project, **not affiliated with or endorsed by** any of them.
+It uses Blackmagic Design's documented, officially supported scripting API, and
+bundles no part of Resolve.
 
 ---
 
@@ -502,8 +522,13 @@ Released under the **[MIT License](LICENSE)** — do what you like with it, incl
 commercially, as long as the copyright notice and licence text come along. It comes
 with no warranty.
 
-Note that the MIT licence covers **this code**. It says nothing about the content you
-download with it — see [Legal](#-legal).
+Two things the MIT licence does **not** cover:
+
+- **The content you download with it.** See [Legal](#-legal).
+- **Components embedded in the built `.exe`.** The source here is MIT; the binary
+  additionally contains a Python interpreter and its libraries, under their own
+  licences. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) before
+  redistributing a build.
 
 ---
 
@@ -522,7 +547,7 @@ download with it — see [Legal](#-legal).
 
 <div align="center">
 
-**© 2026 Karol Szaciłło (GRApedia)**
+**© 2026 [haej](https://github.com/hajdawery)**
 
 Made for editors who are tired of the download-trim-import shuffle.
 

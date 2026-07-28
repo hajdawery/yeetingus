@@ -33,7 +33,7 @@ import deps                      # noqa: E402
 import naming                    # noqa: E402
 import resolve_bridge            # noqa: E402
 import theme as T                # noqa: E402
-from version import APP_NAME, COPYRIGHT, __version__  # noqa: E402
+from version import APP_NAME, AUTHOR_URL, COPYRIGHT, __version__  # noqa: E402
 
 # Progress is split into bands so the bar moves through the whole job, not just
 # the download: info lookup, download, then the Resolve insert.
@@ -725,8 +725,13 @@ class YeetApp:
         about.pack(fill="x", padx=T.px(26), pady=(T.px(2), 0))
         tk.Label(about, text=f"{APP_NAME} v{__version__}", bg=T.BG, fg=T.MUTED,
                  font=(T.FONT, 9)).pack(side="left")
-        tk.Label(about, text=COPYRIGHT, bg=T.BG, fg=T.MUTED,
-                 font=(T.FONT, 9)).pack(side="right")
+        credit = tk.Label(about, text=COPYRIGHT, bg=T.BG, fg=T.MUTED,
+                          font=(T.FONT, 9), cursor="hand2")
+        credit.pack(side="right")
+        credit.bind("<Button-1>", lambda _e: self.open_author_page())
+        credit.bind("<Enter>", lambda _e: credit.configure(fg=T.ACCENT))
+        credit.bind("<Leave>", lambda _e: credit.configure(fg=T.MUTED))
+        T.tooltip(credit, AUTHOR_URL)
 
         buttons = tk.Frame(win, bg=T.BG)
         buttons.pack(fill="x", padx=T.px(26), pady=(10, 22))
@@ -802,6 +807,15 @@ class YeetApp:
             return None
 
     # ---- actions ---------------------------------------------------------- #
+
+    def open_author_page(self) -> None:
+        """Open the author's page in the default browser (from the Settings credit)."""
+        try:
+            import webbrowser
+            webbrowser.open(AUTHOR_URL)
+            self.log(f"Opened {AUTHOR_URL}")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"Couldn't open {AUTHOR_URL}: {e}")
 
     def open_downloads(self) -> None:
         os.makedirs(self.download_dir, exist_ok=True)

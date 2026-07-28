@@ -28,16 +28,30 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# True when running as the frozen Install-<App>.exe rather than from the repo.
+FROZEN = getattr(sys, "frozen", False)
+
 # The app was called "YEET" up to v1.0.0; used only for one-time migration.
 LEGACY_NAME = "YEET"
 
 
+def resource(*parts: str) -> str:
+    """Locate a bundled file.
+
+    Frozen, everything the installer needs — the app exe, the shim and the
+    launcher template — is unpacked flat into a temp dir, so only the basename
+    matters. From the repo they keep their normal layout.
+    """
+    if FROZEN:
+        return os.path.join(getattr(sys, "_MEIPASS", HERE), parts[-1])
+    return os.path.join(HERE, *parts)
+
+
 def _read_const(name: str, fallback: str) -> str:
-    """Read a constant from backend/version.py without importing it (which would
-    pull in tkinter)."""
-    path = os.path.join(HERE, "backend", "version.py")
+    """Read a constant from version.py without importing it (which would pull in
+    tkinter via the package's other modules)."""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(resource("backend", "version.py"), "r", encoding="utf-8") as fh:
             match = re.search(rf'{name}\s*=\s*["\']([^"\']+)["\']', fh.read())
         if match:
             return match.group(1)
@@ -47,10 +61,12 @@ def _read_const(name: str, fallback: str) -> str:
 
 
 def read_version() -> str:
+    """The app version from backend/version.py."""
     return _read_const("__version__", "unknown")
 
 
 def read_app_name() -> str:
+    """The app name from backend/version.py."""
     return _read_const("APP_NAME", "YEETingus")
 
 
@@ -61,6 +77,7 @@ LUA_NAME = f"{APP}.lua"
 
 
 def app_dir() -> str:
+    """Where the app and its shim are installed."""
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, APP)
 
@@ -178,7 +195,8 @@ def install_dev_shim() -> str | None:
 
 
 def install_exe() -> str | None:
-    src = os.path.join(HERE, "dist", EXE_NAME)
+    """Copy the built exe and its launch shim into place. Returns the exe path."""
+    src = resource("dist", EXE_NAME)
     if not os.path.isfile(src):
         return None
     dest_dir = app_dir()
@@ -193,7 +211,7 @@ def install_exe() -> str | None:
 
     # The shim must sit next to the exe; it launches "%~dp0<App>.exe" with
     # PYTHONHOME cleared, without which the exe segfaults under Resolve.
-    shim_src = os.path.join(HERE, "resolve", SHIM_NAME)
+    shim_src = resource("resolve", SHIM_NAME)
     if os.path.isfile(shim_src):
         shim_dest = os.path.join(dest_dir, SHIM_NAME)
         shutil.copy2(shim_src, shim_dest)
@@ -211,7 +229,7 @@ def install_launcher() -> str | None:
     menu item silently does nothing. AutoSubs hardcodes its paths for the same
     reason.
     """
-    src = os.path.join(HERE, "resolve", f"{APP}.lua.in")
+    src = resource("resolve", f"{APP}.lua.in")
     if not os.path.isfile(src):
         print(f"! missing {src}")
         return None
@@ -279,6 +297,7 @@ def verify() -> bool:
 
 
 def main() -> int:
+    """Install, verify, and report. Returns a process exit code."""
     dev = "--dev" in sys.argv
     print(f"Installing {APP}…")
 
@@ -312,5 +331,17 @@ def main() -> int:
     return 0
 
 
+def _run() -> int:
+    code = main()
+    # Double-clicked, the console window closes the instant this returns, taking
+    # the verification block with it. Wait for a keypress so it can be read.
+    if FROZEN and sys.stdin is not None and sys.stdin.isatty():
+        try:
+            input("\nPress Enter to close…")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return code
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_run())

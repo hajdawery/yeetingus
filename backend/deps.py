@@ -42,11 +42,13 @@ ProgressCB = Callable[[str], None]
 
 
 def app_dir() -> str:
+    """Per-user folder holding the downloaded tools and settings."""
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, APP_NAME)
 
 
 def bin_dir() -> str:
+    """Where first-run downloads of yt-dlp and ffmpeg land. Created on demand."""
     d = os.path.join(app_dir(), "bin")
     os.makedirs(d, exist_ok=True)
     return d
@@ -113,6 +115,7 @@ def _download(url: str, dest: str, log: ProgressCB) -> None:
 
 
 def find_ytdlp() -> list[str] | None:
+    """How to invoke yt-dlp as a command list, or None if it is unavailable."""
     override = os.environ.get("YEET_YTDLP")
     if override and os.path.isfile(override):
         return [override]
@@ -134,6 +137,7 @@ def find_ytdlp() -> list[str] | None:
 
 
 def ensure_ytdlp(log: ProgressCB) -> list[str]:
+    """find_ytdlp(), downloading the standalone binary first if it is missing."""
     cmd = find_ytdlp()
     if cmd:
         return cmd
@@ -148,6 +152,7 @@ def ensure_ytdlp(log: ProgressCB) -> list[str]:
 
 
 def find_ffmpeg() -> str | None:
+    """Path to an ffmpeg binary, or None if there is none to be found."""
     override = os.environ.get("YEET_FFMPEG")
     if override and os.path.isfile(override):
         return override
@@ -172,6 +177,7 @@ def find_ffprobe() -> str | None:
 
 
 def ensure_ffmpeg(log: ProgressCB) -> str:
+    """find_ffmpeg(), downloading and extracting a build first if it is missing."""
     found = find_ffmpeg()
     if found:
         return found

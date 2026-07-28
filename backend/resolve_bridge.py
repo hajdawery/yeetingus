@@ -7,9 +7,9 @@ luasocket, so an in-Resolve HTTP server isn't possible without vendoring native
 DLLs. The external Python API is officially supported and much simpler — the same
 process that runs yt-dlp can drive Resolve.
 
-IMPORTANT: `fusionscript.dll` is a CPython C extension. It must be loaded by a
-Python version whose ABI it was built against (roughly 3.6–3.11). Newer Pythons
-(3.12+, and definitely 3.14) segfault on import. See REQUIRED_PY note below.
+IMPORTANT: `fusionscript.dll` is a CPython C extension. It must be loaded by an
+interpreter whose ABI it was built against; anything newer segfaults on import
+rather than raising. See MIN_PY / MAX_PY below for the verified range.
 """
 
 from __future__ import annotations
@@ -93,6 +93,7 @@ MAX_PY = (3, 13)
 
 
 def version_range_text() -> str:
+    """The supported interpreter range, for error messages."""
     return f"{MIN_PY[0]}.{MIN_PY[1]}-{MAX_PY[0]}.{MAX_PY[1]}"
 
 
@@ -145,6 +146,10 @@ def _timecode_to_frames(tc: str, fps: float) -> int | None:
 
 
 def get_timeline_info() -> dict:
+    """Project name, timeline name, fps and playhead position.
+
+    Raises ResolveError with a message fit for the UI when Resolve is not
+    running, or has no project or timeline open."""
     app = connect()
     project = app.GetProjectManager().GetCurrentProject()
     if not project:
