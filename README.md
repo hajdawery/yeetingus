@@ -25,6 +25,7 @@ shuffling, no manual importing.
 - [Features](#-features)
 - [Requirements](#-requirements)
 - [Installation](#-installation)
+- [Antivirus false positives](#-antivirus-false-positives)
 - [How to use it](#-how-to-use-it)
 - [Settings](#-settings)
 - [Where clips are saved](#-where-clips-are-saved)
@@ -171,6 +172,12 @@ Then **restart DaVinci Resolve**.
 > Restarting Resolve is required, not optional. Resolve caches the launcher script
 > when it builds the Scripts menu, so until you restart it keeps running the old one.
 
+> [!IMPORTANT]
+> **Windows Defender may flag the pre-built binaries as a false positive.** This is
+> normal for PyInstaller applications and is explained in full under
+> [Antivirus false positives](#-antivirus-false-positives) — including how to verify
+> the files, and how to avoid pre-built binaries entirely by building from source.
+
 The installer prints a verification block listing exactly what it wrote, and fails
 loudly if anything is missing rather than claiming success.
 
@@ -218,6 +225,51 @@ to run on an unsupported version rather than producing a broken exe, and
 `resolve_bridge.MAX_PY` is the single constant to bump once a newer Python works.
 
 </details>
+
+---
+
+## 🛡️ Antivirus false positives
+
+> [!IMPORTANT]
+> **Windows Defender and several other scanners flag these builds.** Defender
+> currently reports `Trojan:Win32/Sabsik.EN.A!ml`. This is a **false positive**, and
+> it is expected rather than surprising.
+
+The `!ml` suffix means it came from a machine-learning model, not from matching known
+malware. Nothing in this project is obfuscated, packed or hidden — the entire source
+is in this repository, and you can read every line of it.
+
+**Why it happens.** The app is a PyInstaller one-file build, and that shape is
+indistinguishable to a heuristic from a malware dropper:
+
+- a one-file exe **unpacks itself** to a temp folder and runs from there
+- it **downloads executables** (yt-dlp and ffmpeg) from the internet
+- it **spawns and kills child processes**
+- it **writes into another application's folder** (Resolve's Scripts directory)
+- it is **unsigned and brand new**, so it has no reputation to weigh against the above
+
+Every one of those is exactly what this tool is *for*, and every one of them is also
+what a scanner is trained to be suspicious of. PyInstaller applications trip this
+routinely; the detection names — `MalwareX-gen`, `TR/W64.Agent`, `Sabsik...!ml` — are
+generic heuristic labels, not identifications of anything specific.
+
+**What you can do about it:**
+
+| | |
+|---|---|
+| **Build it yourself** | `py -3.13 build.py` from this source. Nothing is hidden, and you get a binary you compiled. |
+| **Check the release checksums** | Release assets list SHA-256 hashes; verify with `certutil -hashfile <file> SHA256`. |
+| **Scan it yourself** | Upload to VirusTotal and look at *which* engines object and what they say. |
+| **Wait for signed builds** | Code signing is planned, which is the actual fix — see below. |
+
+**The real fix is a code signing certificate**, and it's on the roadmap for the first
+tagged release. A signed binary builds reputation, and Defender's model weights
+signing heavily. Until then, the warning is something you have to click through, and
+you should only do that if you're satisfied by the points above.
+
+If you don't want to click through a scanner warning — and that is a completely
+reasonable position — **build from source instead**. That path involves no
+pre-compiled binary from anyone.
 
 ---
 
