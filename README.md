@@ -169,6 +169,8 @@ py -3.13 install.py    # installs it + adds the Resolve menu entry
 
 Then **restart DaVinci Resolve**.
 
+What changed between versions is in the [changelog](CHANGELOG.md).
+
 > [!WARNING]
 > Restarting Resolve is required, not optional. Resolve caches the launcher script
 > when it builds the Scripts menu, so until you restart it keeps running the old one.
