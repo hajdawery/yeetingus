@@ -4,6 +4,10 @@
 # Windows shells need CRLF — a .bat with LF endings can misparse.
 *.bat text eol=crlf
 
+# Shell scripts must be LF everywhere, including in a Windows working copy:
+# a .sh with CRLF fails on macOS/Linux with "bad interpreter".
+*.sh text eol=lf
+
 # Python/Lua/Markdown stay LF in the repo.
 *.py text eol=lf
 *.in text eol=lf

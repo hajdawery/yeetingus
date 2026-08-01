@@ -17,6 +17,7 @@ why that differs by platform.
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -33,6 +34,34 @@ WINDOWS = pp.WINDOWS
 MACOS = pp.MACOS
 
 INSTALLER_NAME = f"Install-{NAME}"
+
+
+def release_asset_name(version: str) -> str:
+    """Release filename: "<App>-<version>-<OS>-<arch>", e.g.
+
+        YEETingus-1.1.0-Windows-x64
+        YEETingus-1.1.0-macOS-arm64
+
+    One convention across platforms, so a releases page sorts and reads
+    predictably and nobody has to guess which file is theirs.
+    """
+    if WINDOWS:
+        os_tag = "Windows"
+    elif MACOS:
+        os_tag = "macOS"
+    else:
+        os_tag = "Linux"
+
+    machine = platform.machine().lower()
+    if machine in ("amd64", "x86_64"):
+        arch = "x64"
+    elif machine in ("arm64", "aarch64"):
+        arch = "arm64"
+    elif machine in ("x86", "i386", "i686"):
+        arch = "x86"
+    else:
+        arch = machine or "unknown"
+    return f"{NAME}-{version}-{os_tag}-{arch}"
 
 # What PyInstaller leaves in dist/ for us to install. On macOS --windowed
 # produces a bundle directory rather than a single file.
@@ -335,9 +364,11 @@ def main() -> int:
     if rc != 0:
         return rc
 
+    import version as v
     sep = "\\" if WINDOWS else "/"
-    installer = INSTALLER_NAME + (".exe" if WINDOWS else "")
-    print(f"\nNext:  run dist{sep}{installer} to install, or `{install_cmd}` from here.")
+    installer = release_asset_name(v.__version__) + (".exe" if WINDOWS else "")
+    print(f"\nRelease asset:  dist{sep}{installer}")
+    print(f"Next:  run it to install, or `{install_cmd}` from here.")
     return 0
 
 
@@ -404,6 +435,21 @@ def build_installer(app_exe: str, icon: str) -> int:
     if not os.path.isfile(out):
         print(f"ERROR: installer build reported success but {out} is missing.")
         return 1
+
+    # Rename to the release convention. PyInstaller has to build under a fixed
+    # --name (it is also the internal identifier), so the version and platform
+    # are applied afterwards rather than baked into the build.
+    import version as v
+    asset = os.path.join(HERE, "dist",
+                         release_asset_name(v.__version__) + os.path.splitext(out)[1])
+    try:
+        if os.path.exists(asset):
+            os.remove(asset)
+        os.replace(out, asset)
+        out = asset
+    except OSError as e:
+        print(f"! couldn't rename to the release name ({e}); keeping {out}")
+
     print(f"Built {out}  ({os.path.getsize(out) / 1048576:.1f} MB)")
     return 0
 

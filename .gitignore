@@ -19,6 +19,10 @@ vendor/
 # diff.
 grafika/
 
+# Working notes between sessions — process, not product. The README is what
+# users read; this stays local.
+HANDOFF.md
+
 # Editors / OS
 .vscode/
 .idea/
