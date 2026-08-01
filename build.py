@@ -36,32 +36,33 @@ MACOS = pp.MACOS
 INSTALLER_NAME = f"Install-{NAME}"
 
 
-def release_asset_name(version: str) -> str:
-    """Release filename: "<App>-<version>-<OS>-<arch>", e.g.
+def release_asset_name() -> str:
+    """Release filename: "<App>-<os>-<arch>", e.g.
 
-        YEETingus-1.1.0-Windows-x64
-        YEETingus-1.1.0-macOS-arm64
+        YEETingus-windows-x86_64
+        YEETingus-Mac-ARM
 
-    One convention across platforms, so a releases page sorts and reads
-    predictably and nobody has to guess which file is theirs.
+    Deliberately carries no version number, so the download link on a website
+    stays the same across releases and nothing has to be renamed by hand each
+    time. The version is still recoverable from the file itself — the Windows
+    version resource and the macOS Info.plist both carry it — and the release
+    page states it.
     """
-    if WINDOWS:
-        os_tag = "Windows"
-    elif MACOS:
-        os_tag = "macOS"
-    else:
-        os_tag = "Linux"
-
     machine = platform.machine().lower()
-    if machine in ("amd64", "x86_64"):
-        arch = "x64"
-    elif machine in ("arm64", "aarch64"):
-        arch = "arm64"
-    elif machine in ("x86", "i386", "i686"):
-        arch = "x86"
+    arm = machine in ("arm64", "aarch64")
+
+    if WINDOWS:
+        os_tag = "windows"
+        arch = "x86_64" if machine in ("amd64", "x86_64") else machine
+    elif MACOS:
+        os_tag = "Mac"
+        arch = "ARM" if arm else "x86_64"
     else:
-        arch = machine or "unknown"
-    return f"{NAME}-{version}-{os_tag}-{arch}"
+        os_tag = "linux"
+        arch = "aarch64" if arm else ("x86_64" if machine in ("amd64", "x86_64")
+                                      else machine)
+    return f"{NAME}-{os_tag}-{arch}"
+
 
 # What PyInstaller leaves in dist/ for us to install. On macOS --windowed
 # produces a bundle directory rather than a single file.
@@ -364,9 +365,8 @@ def main() -> int:
     if rc != 0:
         return rc
 
-    import version as v
     sep = "\\" if WINDOWS else "/"
-    installer = release_asset_name(v.__version__) + (".exe" if WINDOWS else "")
+    installer = release_asset_name() + (".exe" if WINDOWS else "")
     print(f"\nRelease asset:  dist{sep}{installer}")
     print(f"Next:  run it to install, or `{install_cmd}` from here.")
     return 0
@@ -437,11 +437,10 @@ def build_installer(app_exe: str, icon: str) -> int:
         return 1
 
     # Rename to the release convention. PyInstaller has to build under a fixed
-    # --name (it is also the internal identifier), so the version and platform
-    # are applied afterwards rather than baked into the build.
-    import version as v
+    # --name (it is also the internal identifier), so the platform suffix is
+    # applied afterwards rather than baked into the build.
     asset = os.path.join(HERE, "dist",
-                         release_asset_name(v.__version__) + os.path.splitext(out)[1])
+                         release_asset_name() + os.path.splitext(out)[1])
     try:
         if os.path.exists(asset):
             os.remove(asset)
