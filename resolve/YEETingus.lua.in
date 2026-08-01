@@ -96,6 +96,10 @@ local function payload_path(path)
   return path
 end
 
+local function is_bundle(path)
+  return not IS_WINDOWS and path:sub(-4) == ".app"
+end
+
 -- Lua has no stat(); seek("end") gives the size.
 local function file_size(path)
   local fh = io.open(payload_path(path), "rb")
@@ -121,7 +125,14 @@ local function print_banner()
   -- anything fancier (middle dots, arrows) would degrade to "?".
   print(string.format("  %s %s   |   youtube -> timeline", APP_NAME, VERSION))
   print(line)
-  print(string.format("  app        : %s  (%s)", EXE, human_size(file_size(EXE))))
+  -- For a bundle this is the size of the launcher inside Contents/MacOS, not of
+  -- the bundle as a whole — most of a onedir build sits in Frameworks/. Say so,
+  -- rather than printing a number that looks like the app came out ten times
+  -- smaller than it did. It still answers the question this banner exists for:
+  -- is there something real at that path.
+  local label = is_bundle(EXE) and "executable %s" or "%s"
+  print(string.format("  app        : %s  (" .. label .. ")",
+                      EXE, human_size(file_size(EXE))))
   print(string.format("  launcher   : %s", SHIM))
   print(string.format("  log        : %s", LOG_PATH))
   print(string.format("  installed  : %s", INSTALLED_AT))

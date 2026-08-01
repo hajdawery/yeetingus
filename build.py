@@ -192,10 +192,21 @@ def main() -> int:
     for d in ("build", "dist"):
         shutil.rmtree(os.path.join(HERE, d), ignore_errors=True)
 
+    # onefile on Windows, onedir on macOS.
+    #
+    # A .app is a directory by definition, so --onefile can't make it one file;
+    # what it actually does is bury a self-extracting binary inside the bundle,
+    # which then unpacks to a temp directory on every launch and runs from there.
+    # That fights the platform: the signature covers the bundle while the code
+    # that actually executes lives somewhere unsigned and transient. PyInstaller
+    # calls this out ("clashes with macOS's security") and makes it a hard error
+    # in v7.0. onedir is the shape macOS expects, and it starts faster.
+    packaging = "--onefile" if WINDOWS else "--onedir"
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
-        "--onefile",
+        packaging,
         "--windowed",                 # no console window
         "--name", NAME,
         "--paths", os.path.join(HERE, "backend"),
@@ -222,6 +233,18 @@ def main() -> int:
             NAME, f"{NAME} — YouTube/Twitch clips into DaVinci Resolve")]
     elif MACOS:
         cmd += ["--osx-bundle-identifier", BUNDLE_ID]
+        # PyInstaller targets the host architecture by default, so a build made
+        # on Apple Silicon runs only on Apple Silicon. Fine for your own machine;
+        # not fine for a release asset that says "macOS". --universal produces a
+        # universal2 bundle instead, which needs every embedded framework to
+        # carry both slices — the python.org builds do, Homebrew's do not.
+        if "--universal" in sys.argv:
+            cmd += ["--target-arch", "universal2"]
+            print("Target: universal2 (Apple Silicon + Intel)")
+        else:
+            import platform as _platform
+            print(f"Target: {_platform.machine()} only "
+                  "(pass --universal for a release build)")
 
     # Icon: used for the app itself, and bundled so the running window/taskbar
     # can set it too (PyInstaller doesn't expose --icon at runtime). The .ico is

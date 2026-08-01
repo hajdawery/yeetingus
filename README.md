@@ -141,7 +141,7 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 
 | | |
 |---|---|
-| 🖥️ **OS** | Windows, or macOS (Apple Silicon and Intel) |
+| 🖥️ **OS** | Windows, or macOS on **Apple Silicon** |
 | 🎬 **DaVinci Resolve** | Studio, running, with a project and timeline open |
 | 🔓 **Scripting enabled** | `Preferences → System → General → External scripting using` → **Local** |
 | 🐍 **Python** | **Only to build it** — 3.6–3.13 (see [note](#the-python-version-constraint)) |
@@ -637,6 +637,9 @@ Media Pool → **Generate Optimized Media**.
   29.97/59.94 timelines may be off by a frame or two
 - 🐧 **No Linux build** — the code paths exist and nothing in them is
   Windows-or-macOS-only, but it is untested and unsupported
+- 💻 **Intel Macs are not supported** — release builds are Apple Silicon only.
+  Nothing in the code precludes Intel, and `build.py --universal` will produce a
+  universal2 bundle, but it isn't tested or shipped
 - 🍎 **macOS: ffmpeg is a manual step** — see
   [ffmpeg on macOS](#-ffmpeg-on-macos)
 - 🍎 **macOS: light title bar in Light Mode** — the Windows build tints its title

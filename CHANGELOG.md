@@ -9,9 +9,11 @@ Notable changes to YEETingus. Format follows
 
 ### Added
 
-- **macOS support.** Apple Silicon and Intel, built as a `.app` bundle. One
-  codebase — `backend/platform_paths.py` is the single place that knows what
-  differs between operating systems.
+- **macOS support**, on Apple Silicon, built as a `.app` bundle. One codebase —
+  `backend/platform_paths.py` is the single place that knows what differs
+  between operating systems. Intel Macs are out of scope: nothing in the code
+  precludes them and `build.py --universal` produces a universal2 bundle, but it
+  is neither tested nor shipped.
 - **`launch_yeetingus.sh`**, the macOS/Linux counterpart to the `.bat` shim. It
   clears `PYTHONHOME` for the same reason, and puts the Homebrew prefixes back on
   `PATH`, which a GUI process launched from Resolve does not inherit.
@@ -40,6 +42,13 @@ Notable changes to YEETingus. Format follows
 - The standalone installer is **opt-in on macOS** (`build.py --installer`). An
   unsigned installer binary is what Gatekeeper blocks, so shipping one by default
   would put a warning on the step meant to reassure.
+- **macOS builds use onedir, not onefile.** A `.app` is a directory by
+  definition, so `--onefile` only buries a self-extracting binary inside it that
+  unpacks to a temp directory on every launch — the signature covers the bundle
+  while the code that runs sits somewhere unsigned and transient. PyInstaller
+  makes this an error in v7.0. The onedir bundle passes
+  `codesign --verify --deep --strict` and starts faster. Windows still uses
+  onefile, where it's the right shape.
 
 ### Fixed
 
