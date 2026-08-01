@@ -134,7 +134,20 @@ def _video_heights(data: dict) -> list[int]:
 # Why bother: H.264 hardware-decodes and scrubs well in Resolve, VP9 less so and
 # AV1 poorly. YouTube also serves AV1 inside .mp4, so "ext=mp4" alone doesn't
 # guarantee H.264.
-FORMAT_SORT = "res,vcodec:h264"
+#
+# acodec:aac is not optional. Resolve cannot decode Opus at all — a clip with an
+# Opus track imports and plays with silence. Without naming an audio codec here
+# yt-dlp picks Opus by preference even when YouTube also offers AAC, which it
+# almost always does.
+FORMAT_SORT = "res,vcodec:h264,acodec:aac"
+
+# yt-dlp's intermediate per-stream files, e.g. "<stem>.f313.webm" (video only) and
+# "<stem>.f140.m4a" (audio only), which it merges and then deletes. An interrupted
+# download leaves them behind, and handing one to Resolve gives MEDIA OFFLINE.
+_FRAGMENT_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
+
+# Containers a finished download can legitimately arrive in.
+MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 
 
 def icon_path() -> str | None:
@@ -1149,6 +1162,12 @@ class YeetApp:
                 continue
             if name.endswith((".part", ".ytdl", ".temp")):
                 continue
+            # A leftover per-stream fragment is video-only or audio-only; treating
+            # one as a finished download is what put MEDIA OFFLINE on the timeline.
+            if _FRAGMENT_RE.search(name):
+                continue
+            if not name.lower().endswith(MEDIA_EXTS):
+                continue
             path = os.path.join(folder, name)
             try:
                 if os.path.isfile(path) and os.path.getsize(path) > 0:
@@ -1392,19 +1411,16 @@ class YeetApp:
                 self.log("      Try 'Best available', or hit 'Update yt-dlp'.")
             return None
 
-        # Prefer the merged mp4; otherwise take whatever container we got,
-        # ignoring yt-dlp's leftover .part / .ytdl scratch files.
-        exact = os.path.join(job_dir, stem + ".mp4")
-        if os.path.isfile(exact):
-            return exact
-        produced = [
-            f for f in os.listdir(job_dir)
-            if f.startswith(stem + ".") and not f.endswith((".part", ".ytdl"))
-        ]
+        # Same rules as the reuse check: the merged mp4 if it's there, otherwise
+        # another container — never a scratch file and never a per-stream
+        # fragment, which would be video-only or audio-only.
+        produced = self._existing_download(job_dir, stem)
         if not produced:
-            self.log("yt-dlp finished but produced no file.")
+            self.log("yt-dlp finished but produced no usable file.")
+            self.log("  (only per-stream fragments were found — the merge step "
+                     "may have failed)")
             return None
-        return os.path.join(job_dir, produced[0])
+        return produced
 
 
 def main() -> None:
