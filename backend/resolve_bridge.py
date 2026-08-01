@@ -7,9 +7,10 @@ luasocket, so an in-Resolve HTTP server isn't possible without vendoring native
 DLLs. The external Python API is officially supported and much simpler — the same
 process that runs yt-dlp can drive Resolve.
 
-IMPORTANT: `fusionscript.dll` is a CPython C extension. It must be loaded by an
-interpreter whose ABI it was built against; anything newer segfaults on import
-rather than raising. See MIN_PY / MAX_PY below for the verified range.
+IMPORTANT: fusionscript (`.dll` on Windows, `.so` on macOS and Linux) is a
+CPython C extension. It must be loaded by an interpreter whose ABI it was built
+against; anything newer segfaults on import rather than raising. See MIN_PY /
+MAX_PY below for the verified range.
 """
 
 from __future__ import annotations
@@ -17,17 +18,15 @@ from __future__ import annotations
 import os
 import sys
 
-# Standard Windows locations, plus the places Resolve ends up when installed to a
-# non-default drive. RESOLVE_SCRIPT_API / RESOLVE_SCRIPT_LIB still win if set.
-_API_CANDIDATES = [
-    r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting",
-    r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Developer\Scripting",
-]
-_LIB_CANDIDATES = [
-    r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll",
-    r"C:\Program Files (x86)\Blackmagic Design\DaVinci Resolve\fusionscript.dll",
-    r"C:\Program Files\Blackmagic Design\DaVinci Resolve Studio\fusionscript.dll",
-]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import platform_paths as _pp  # noqa: E402
+
+# Where Resolve puts its scripting API and native library, per platform. The
+# lists cover non-default install locations too. RESOLVE_SCRIPT_API /
+# RESOLVE_SCRIPT_LIB still win if set.
+_API_CANDIDATES = _pp.resolve_api_candidates()
+_LIB_CANDIDATES = _pp.resolve_lib_candidates()
 
 DEFAULT_API = _API_CANDIDATES[0]
 DEFAULT_LIB = _LIB_CANDIDATES[0]
@@ -81,11 +80,16 @@ def describe_env() -> dict:
 # running interpreter's ABI. Blackmagic's README optimistically claims "3.6+",
 # but the real ceiling lags new Python releases until they rebuild it.
 #
-# Verified on this machine against Resolve's June 2026 fusionscript.dll:
-#   3.11 -> imports OK        3.13 -> imports OK        3.14 -> SEGFAULT
+# Verified against Resolve's June 2026 fusionscript:
+#   Windows (fusionscript.dll):
+#     3.11 -> imports OK      3.13 -> imports OK      3.14 -> SEGFAULT
+#   macOS arm64 (fusionscript.so, Resolve 20.x):
+#     3.13 -> imports OK
 #
-# Raise MAX_PY by one minor version at a time, and only after confirming
-#   py -3.X -c "import DaVinciResolveScript"
+# The range is the same on both, which is expected: it's the CPython ABI that
+# constrains it, not the OS. Raise MAX_PY by one minor version at a time, and
+# only after confirming
+#   python3.X -c "import DaVinciResolveScript"
 # exits 0 rather than crashing. This constant is the single source of truth --
 # build.py reads it too.
 MIN_PY = (3, 6)
@@ -106,10 +110,12 @@ def python_is_supported() -> bool:
 def connect():
     """Return a live Resolve app handle, or raise ResolveError."""
     if not python_is_supported():
+        launcher = (f"py -{MAX_PY[0]}.{MAX_PY[1]}" if _pp.WINDOWS
+                    else f"python{MAX_PY[0]}.{MAX_PY[1]}")
         raise ResolveError(
             f"Python {sys.version_info.major}.{sys.version_info.minor} can't load Resolve's "
             f"scripting library (it would crash). Run the app with Python "
-            f"{version_range_text()} — e.g. `py -{MAX_PY[0]}.{MAX_PY[1]} yeet_app.py`."
+            f"{version_range_text()} — e.g. `{launcher} yeet_app.py`."
         )
     _ensure_env()
     try:

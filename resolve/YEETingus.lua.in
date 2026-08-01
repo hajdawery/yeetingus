@@ -13,34 +13,51 @@
      clicking the menu item did nothing at all. AutoSubs hardcodes absolute
      paths in its launcher for exactly this reason, and so do we.
 
-  2. LAUNCH VIA FFI, NOT os.execute. Resolve's Lua host does not reliably run
-     os.execute. AutoSubs calls ShellExecuteA from Shell32.dll through LuaJIT's
-     FFI; os.execute is kept only as a last-ditch fallback.
+  2. LAUNCH VIA FFI, NOT os.execute (Windows). Resolve's Lua host does not
+     reliably run os.execute. AutoSubs calls ShellExecuteA from Shell32.dll
+     through LuaJIT's FFI; os.execute is kept only as a last-ditch fallback.
+     There is no ShellExecuteA on macOS, so there the order is reversed:
+     bmd.openfileexternal first, then /usr/bin/open via os.execute.
 
-  3. LAUNCH THE .BAT, NOT THE .EXE. Resolve exports PYTHONHOME for its scripting
-     host, and a PyInstaller exe that inherits PYTHONHOME segfaults on startup.
-     launch_yeetingus.bat clears those vars first.
+  3. LAUNCH THE SHIM, NOT THE APP. Resolve exports PYTHONHOME for its scripting
+     host, and a PyInstaller build that inherits PYTHONHOME segfaults on
+     startup. launch_yeetingus.bat / .sh clears those vars first.
 
   4. Resolve caches this file when it builds the Scripts menu at startup. After
      reinstalling, restart Resolve or it keeps running the old copy.
+
+  This template serves every platform; install.py bakes in the paths for the one
+  it is running on, and the launch strategies below are chosen at runtime.
 ]]--
 
 -- Absolute paths baked in by install.py --------------------------------------
 local YEET_DIR = [[@@YEET_DIR@@]]
-local BAT      = [[@@BAT@@]]
+local SHIM     = [[@@SHIM@@]]
 local EXE      = [[@@EXE@@]]
 local LOG_PATH = [[@@LOG@@]]
 local APP_NAME     = [[@@APP_NAME@@]]
 local VERSION      = [[@@VERSION@@]]
 local INSTALLED_AT = [[@@INSTALLED_AT@@]]
 
+-- Lua has no os.name. This is the portable idiom: the config string's first
+-- character is the path separator, which is "\" only on Windows.
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+
 -- If this file was copied without substitution, fall back to the environment.
 if YEET_DIR:find("@@", 1, true) then
-  local base = (os.getenv("LOCALAPPDATA") or "") .. "\\YEETingus"
+  local base
+  if IS_WINDOWS then
+    base = (os.getenv("LOCALAPPDATA") or "") .. "\\YEETingus"
+    SHIM = base .. "\\launch_yeetingus.bat"
+    EXE  = base .. "\\YEETingus.exe"
+    LOG_PATH = base .. "\\launcher.log"
+  else
+    base = (os.getenv("HOME") or "") .. "/Library/Application Support/YEETingus"
+    SHIM = base .. "/launch_yeetingus.sh"
+    EXE  = base .. "/YEETingus.app"
+    LOG_PATH = base .. "/launcher.log"
+  end
   YEET_DIR = base
-  BAT = base .. "\\launch_yeetingus.bat"
-  EXE = base .. "\\YEETingus.exe"
-  LOG_PATH = base .. "\\launcher.log"
   APP_NAME = "YEETingus"
   VERSION = "unknown (unsubstituted template)"
   INSTALLED_AT = "unknown"
@@ -62,12 +79,26 @@ local function file_exists(path)
     fh:close()
     return true
   end
-  return false
+  -- io.open fails on directories, and on macOS the app IS a directory: a .app
+  -- bundle is a folder. os.rename(p, p) succeeds for anything that exists,
+  -- which is the portable way to ask "is there something here at all".
+  local ok = os.rename(path, path)
+  return ok == true
+end
+
+-- The file whose size is worth reporting. On macOS the installed app is a
+-- bundle, so report the executable inside it rather than the folder.
+local function payload_path(path)
+  if IS_WINDOWS then return path end
+  if path:sub(-4) == ".app" then
+    return path .. "/Contents/MacOS/" .. APP_NAME
+  end
+  return path
 end
 
 -- Lua has no stat(); seek("end") gives the size.
 local function file_size(path)
-  local fh = io.open(path, "rb")
+  local fh = io.open(payload_path(path), "rb")
   if not fh then return nil end
   local size = fh:seek("end")
   fh:close()
@@ -91,7 +122,7 @@ local function print_banner()
   print(string.format("  %s %s   |   youtube -> timeline", APP_NAME, VERSION))
   print(line)
   print(string.format("  app        : %s  (%s)", EXE, human_size(file_size(EXE))))
-  print(string.format("  launcher   : %s", BAT))
+  print(string.format("  launcher   : %s", SHIM))
   print(string.format("  log        : %s", LOG_PATH))
   print(string.format("  installed  : %s", INSTALLED_AT))
   -- Deliberately not printed: the clip folder is configurable, so any path
@@ -106,12 +137,16 @@ local function print_footer(launched)
   else
     print("  Status     : LAUNCH FAILED -- see the attempts above and")
     print("               " .. LOG_PATH)
-    print("  Reinstall  : py -3.13 build.py   then   py -3.13 install.py")
+    if IS_WINDOWS then
+      print("  Reinstall  : py -3.13 build.py   then   py -3.13 install.py")
+    else
+      print("  Reinstall  : python3.13 build.py   then   python3.13 install.py")
+    end
   end
   print(string.rep("=", 58))
 end
 
--- Strategy 1: Shell32!ShellExecuteA via LuaJIT FFI (how AutoSubs does it).
+-- Windows strategy: Shell32!ShellExecuteA via LuaJIT FFI (how AutoSubs does it).
 -- SW_HIDE stops the shim's console flashing; the GUI app still shows its window.
 -- ShellExecuteA returns >32 on success.
 local function launch_ffi(target, workdir)
@@ -133,7 +168,9 @@ local function launch_ffi(target, workdir)
   return (tonumber(rc) or 0) > 32, "ShellExecuteA returned " .. tostring(rc)
 end
 
--- Strategy 2: Fusion's own external-open helper.
+-- Fusion's own external-open helper. Cross-platform, but it goes through the
+-- platform's file-association machinery, so on macOS it is only used on the .app
+-- bundle -- see launch_sh for why it must not be pointed at the shim.
 local function launch_bmd(target)
   if not (bmd and bmd.openfileexternal) then
     return false, "bmd.openfileexternal unavailable"
@@ -142,19 +179,75 @@ local function launch_bmd(target)
   return ok, "openfileexternal ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
 end
 
--- Strategy 3: os.execute (unreliable inside Resolve, fine under fuscript).
-local function launch_os(target)
+-- Windows os.execute (unreliable inside Resolve, fine under fuscript).
+local function launch_os_win(target)
   local ok, rc = pcall(os.execute, 'start "" /min "' .. target .. '"')
   return (ok and (rc == true or rc == 0)),
          "os.execute ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
 end
 
-local function try_launch(target, workdir)
-  local strategies = {
-    { name = "ffi ShellExecuteA",    fn = function() return launch_ffi(target, workdir) end },
-    { name = "bmd.openfileexternal", fn = function() return launch_bmd(target) end },
-    { name = "os.execute",           fn = function() return launch_os(target) end },
-  }
+-- macOS/Linux strategy: run the shim through sh, explicitly.
+--
+-- NOT `open "shim.sh"`. Launch Services resolves a .sh by file association and
+-- would hand it to a text editor -- the script opens in a window instead of
+-- running, which looks exactly like a silent failure. Naming the interpreter
+-- skips association entirely.
+--
+-- Backgrounded with & and detached from stdio, so Resolve's Lua host is never
+-- left waiting on a GUI app that runs until the user closes it.
+local function launch_sh(target)
+  local cmd = string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
+  local ok, rc = pcall(os.execute, cmd)
+  return (ok and (rc == true or rc == 0 or rc == nil)),
+         "os.execute sh ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
+end
+
+-- Same command via io.popen, for a host where os.execute is stubbed out.
+local function launch_popen(target)
+  local cmd = string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
+  local ok, handle = pcall(io.popen, cmd)
+  if not ok or not handle then return false, "io.popen unavailable" end
+  pcall(function() handle:close() end)
+  return true, "io.popen spawned"
+end
+
+-- Last resort on macOS: libc system(), reached through LuaJIT's FFI. Same role
+-- the ShellExecuteA path plays on Windows -- a way out when the Lua host's own
+-- process functions have been stubbed.
+local function launch_ffi_system(target)
+  local ok_ffi, ffi = pcall(require, "ffi")
+  if not ok_ffi then return false, "no ffi module" end
+  pcall(ffi.cdef, [[ int system(const char *command); ]])
+  local cmd = string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
+  local ok_call, rc = pcall(function() return ffi.C.system(cmd) end)
+  if not ok_call then return false, "system() raised: " .. tostring(rc) end
+  return tonumber(rc) == 0, "system() returned " .. tostring(rc)
+end
+
+local function try_launch(target, workdir, bundle)
+  local strategies
+  if IS_WINDOWS then
+    strategies = {
+      { name = "ffi ShellExecuteA",    fn = function() return launch_ffi(target, workdir) end },
+      { name = "bmd.openfileexternal", fn = function() return launch_bmd(target) end },
+      { name = "os.execute",           fn = function() return launch_os_win(target) end },
+    }
+  else
+    strategies = {
+      { name = "sh (os.execute)", fn = function() return launch_sh(target) end },
+      { name = "sh (io.popen)",   fn = function() return launch_popen(target) end },
+      { name = "ffi system()",    fn = function() return launch_ffi_system(target) end },
+    }
+    -- Only meaningful if an .app bundle was installed; a --dev install has none.
+    -- Launch Services gives the bundle a clean launchd environment, so this also
+    -- sidesteps the PYTHONHOME problem the shim exists to solve.
+    if bundle and file_exists(bundle) then
+      strategies[#strategies + 1] =
+        { name = "bmd.openfileexternal (bundle)",
+          fn = function() return launch_bmd(bundle) end }
+    end
+  end
+
   for _, s in ipairs(strategies) do
     local ok, detail = s.fn()
     log(string.format("  [%s] %s -> %s", ok and "OK" or "--", s.name, tostring(detail)))
@@ -168,21 +261,25 @@ log("--- launcher invoked ---")
 
 local launched = false
 
+local reinstall = IS_WINDOWS
+  and "Reinstall with:  py -3.13 build.py   then   py -3.13 install.py"
+  or  "Reinstall with:  python3.13 build.py   then   python3.13 install.py"
+
 -- The shim is the only supported entry point: it clears PYTHONHOME first, and in
--- --dev installs it runs the source script instead of the exe. So check for it
--- before worrying about whether the exe exists.
-if file_exists(BAT) then
-  log("launching shim: " .. BAT)
-  launched = try_launch(BAT, YEET_DIR)
+-- --dev installs it runs the source script instead of the built app. So check
+-- for it before worrying about whether the app exists.
+if file_exists(SHIM) then
+  log("launching shim: " .. SHIM)
+  launched = try_launch(SHIM, YEET_DIR, EXE)
   log(launched and "launched." or "ERROR: every launch mechanism failed.")
 elseif not file_exists(EXE) then
-  log("ERROR: neither the shim nor " .. APP_NAME .. ".exe was found.")
-  log("  shim: " .. BAT)
+  log("ERROR: neither the shim nor " .. APP_NAME .. " itself was found.")
+  log("  shim: " .. SHIM)
   log("  app : " .. EXE)
-  log("Reinstall with:  py -3.13 build.py   then   py -3.13 install.py")
+  log(reinstall)
 else
-  log("ERROR: launch shim missing at " .. BAT)
-  log("  (never launch the exe directly from Resolve -- see note 3 above)")
+  log("ERROR: launch shim missing at " .. SHIM)
+  log("  (never launch the app directly from Resolve -- see note 3 above)")
 end
 
 print_footer(launched)

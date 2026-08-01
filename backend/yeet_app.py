@@ -18,6 +18,7 @@ import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -44,6 +45,27 @@ _PCT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 # Width of the log panel docked to the right; the window grows by this when the
 # log is shown. Authored at 96 DPI like every other pixel value.
 LOG_PANEL_W = 420
+
+def _spawn_kwargs() -> dict:
+    """subprocess keyword arguments for launching an external tool.
+
+    Two platform concerns, both invisible when they work:
+
+    * No console window on Windows. CREATE_NO_WINDOW doesn't exist on POSIX, and
+      passing 0 there is accepted and ignored.
+    * A killable process group. yt-dlp spawns ffmpeg as a child, so STOP has to
+      take out the whole tree — killing the parent alone leaves ffmpeg running
+      and still writing to the output file. Windows does this at kill time with
+      `taskkill /T`, which walks the tree itself. POSIX has no equivalent, so the
+      group must be established when the process starts: start_new_session puts
+      the child in a fresh process group whose id equals its pid, which
+      os.killpg can then signal as a unit. Set it here or STOP cannot work.
+    """
+    kwargs: dict = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    if sys.platform != "win32":
+        kwargs["start_new_session"] = True
+    return kwargs
+
 
 # yt-dlp's post-download stages. --force-keyframes-at-cuts re-encodes around the
 # cut points, so this can take a while and deserves its own label rather than
@@ -150,9 +172,8 @@ _FRAGMENT_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
 MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 
 
-def icon_path() -> str | None:
-    """The app icon, whether running frozen or from source."""
-    name = f"{APP_NAME.lower()}.ico"
+def _asset(name: str) -> str | None:
+    """An asset path, whether running frozen or from source."""
     if getattr(sys, "frozen", False):
         candidate = os.path.join(getattr(sys, "_MEIPASS", ""), "assets", name)
     else:
@@ -161,13 +182,41 @@ def icon_path() -> str | None:
     return candidate if os.path.isfile(candidate) else None
 
 
+def icon_path() -> str | None:
+    """The app icon, whether running frozen or from source."""
+    return _asset(f"{APP_NAME.lower()}.ico")
+
+
+# Held for the lifetime of the process: Tk keeps only a weak reference to a
+# PhotoImage passed to iconphoto, so letting it be collected blanks the icon.
+_icon_image = None
+
+
 def apply_icon(window: tk.Misc) -> None:
-    """Set the window/taskbar icon. Silently skipped if the .ico is missing."""
-    path = icon_path()
-    if not path:
+    """Set the window/taskbar icon. Silently skipped if no asset is available.
+
+    iconbitmap wants a .ico on Windows and refuses one everywhere else, so on
+    macOS and Linux the PNG goes through iconphoto instead. On macOS this mostly
+    affects running from source — a built .app takes its Dock icon from the
+    bundle's .icns, which the window setting can't override.
+    """
+    global _icon_image
+    if sys.platform == "win32":
+        path = icon_path()
+        if not path:
+            return
+        try:
+            window.iconbitmap(path)      # type: ignore[attr-defined]
+        except tk.TclError:
+            pass
+        return
+
+    png = _asset("logo.png")
+    if not png:
         return
     try:
-        window.iconbitmap(path)          # type: ignore[attr-defined]
+        _icon_image = tk.PhotoImage(file=png)
+        window.iconphoto(True, _icon_image)   # type: ignore[attr-defined]
     except tk.TclError:
         pass
 
@@ -205,6 +254,9 @@ class YeetApp:
         # an update is still running — hence the nullable reference.
         self.update_btn: T.RoundButton | None = None
         self.ytdlp_info_var = tk.StringVar(value="checking…")
+        self.ffmpeg_info_var = tk.StringVar(value="checking…")
+        # Settings-window buttons; None whenever that window isn't open.
+        self.ffmpeg_btn = None
 
         root.title(APP_NAME)
         root.configure(bg=T.BG)
@@ -594,6 +646,38 @@ class YeetApp:
             return
         threading.Thread(target=self._update_ytdlp, daemon=True).start()
 
+    # ---- ffmpeg install (macOS) -------------------------------------------- #
+
+    def _enable_ffmpeg_btn(self, enabled: bool) -> None:
+        """Safe even if the Settings window has since been closed."""
+        def apply() -> None:
+            btn = self.ffmpeg_btn
+            if btn is not None and btn.winfo_exists():
+                btn.set_enabled(enabled)
+        self.root.after(0, apply)
+
+    def on_install_ffmpeg(self) -> None:
+        if self.busy:
+            return
+        threading.Thread(target=self._install_ffmpeg, daemon=True).start()
+
+    def _install_ffmpeg(self) -> None:
+        """Hand off to Homebrew, then adopt the result without a restart."""
+        self._enable_ffmpeg_btn(False)
+        self.reveal_log()   # brew is chatty and slow; the user should see it working
+        try:
+            self.ffmpeg_path = deps.install_ffmpeg_via_brew(self.log)
+            self.root.after(0, lambda: self.ffmpeg_info_var.set(self.ffmpeg_path or ""))
+            self.log("ffmpeg is ready — no restart needed.")
+            # The boot sequence gives up on a missing ffmpeg and leaves the
+            # action buttons disabled; now that it's here, let them back in.
+            if self.ytdlp_cmd:
+                self.root.after(0, lambda: self._set_busy(False))
+                self._check_connection()
+        except Exception as e:  # noqa: BLE001 — message is written for the log
+            self.log(f"ERROR: {e}")
+            self._enable_ffmpeg_btn(True)
+
     def _update_ytdlp(self) -> None:
         self._enable_update_btn(False)
         try:
@@ -607,7 +691,7 @@ class YeetApp:
             self.log("Updating yt-dlp: " + " ".join(args))
             proc = subprocess.Popen(
                 args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                bufsize=1, **_spawn_kwargs())
             assert proc.stdout is not None
             for line in proc.stdout:
                 line = line.rstrip()
@@ -699,8 +783,9 @@ class YeetApp:
         T.step_header(ib, 3, "Tools").pack(anchor="w", pady=(0, 14))
         # Live vars so an update performed from this window refreshes in place.
         self.ytdlp_info_var.set(self._ytdlp_info_text())
+        self.ffmpeg_info_var.set(self.ffmpeg_path or "not found")
         for label, var in (("yt-dlp", self.ytdlp_info_var),
-                           ("ffmpeg", tk.StringVar(value=self.ffmpeg_path or "not found"))):
+                           ("ffmpeg", self.ffmpeg_info_var)):
             line = tk.Frame(ib, bg=T.CARD)
             line.pack(fill="x", pady=2)
             tk.Label(line, text=f"{label}:", bg=T.CARD, fg=T.MUTED,
@@ -728,10 +813,27 @@ class YeetApp:
         if self.busy:
             self.update_btn.set_enabled(False)
 
-        # The button lives in a throwaway window; don't leave a dead widget
-        # reference behind for the update thread to poke at.
-        win.bind("<Destroy>", lambda e: setattr(self, "update_btn", None)
-                 if e.widget is win else None)
+        # macOS only, and only while it's actually missing: ffmpeg is installed
+        # by Homebrew rather than downloaded (see deps.py), so this is the one
+        # dependency the app can't just resolve on its own. Offering the command
+        # as a button beats making the user find a terminal — but it runs only
+        # on this explicit click, never as part of startup.
+        self.ffmpeg_btn = None
+        if deps.MACOS_FFMPEG_MANUAL and not self.ffmpeg_path:
+            self.ffmpeg_btn = T.ghost_button(
+                ib, "Install ffmpeg (Homebrew)", self.on_install_ffmpeg,
+                height=40, font=(T.FONT, 10))
+            self.ffmpeg_btn.pack(fill="x", pady=(T.px(8), 0))
+            if self.busy:
+                self.ffmpeg_btn.set_enabled(False)
+
+        # The buttons live in a throwaway window; don't leave dead widget
+        # references behind for the worker threads to poke at.
+        def _forget(e: tk.Event) -> None:
+            if e.widget is win:
+                self.update_btn = None
+                self.ffmpeg_btn = None
+        win.bind("<Destroy>", _forget)
 
         # About / credit ---------------------------------------------------- #
         about = tk.Frame(win, bg=T.BG)
@@ -792,11 +894,25 @@ class YeetApp:
         self.log(f"{APP_NAME} {__version__} starting…")
         self.log(f"Clips → {self.download_dir}")
 
+        # Resolved separately rather than via ensure_all, so a missing ffmpeg
+        # doesn't also throw away a perfectly good yt-dlp: on macOS ffmpeg is the
+        # user's to install, and the Settings button that installs it needs
+        # ytdlp_cmd already recorded to pick up where this left off.
         try:
-            self.ytdlp_cmd, self.ffmpeg_path = deps.ensure_all(self.log)
+            self.ytdlp_cmd = deps.ensure_ytdlp(self.log)
         except Exception as e:  # noqa: BLE001
-            self.log(f"ERROR getting tools: {e}")
+            self.log(f"ERROR getting yt-dlp: {e}")
             self._set_status("missing tools", T.DANGER)
+            return
+
+        try:
+            self.ffmpeg_path = deps.ensure_ffmpeg(self.log)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"ERROR: {e}")
+            self._set_status("ffmpeg missing", T.DANGER)
+            self.reveal_log()
+            if deps.MACOS_FFMPEG_MANUAL:
+                self.log("Open Settings to install it, or run the command above.")
             return
 
         self.ytdlp_version = self._probe_version()
@@ -813,8 +929,7 @@ class YeetApp:
         try:
             proc = subprocess.run([*(self.ytdlp_cmd or []), "--version"],
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, timeout=30,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                  text=True, timeout=30, **_spawn_kwargs())
             return (proc.stdout or "").strip().splitlines()[-1] if proc.returncode == 0 else None
         except Exception:  # noqa: BLE001
             return None
@@ -1028,8 +1143,16 @@ class YeetApp:
         self._kill_active()
 
     def _kill_active(self) -> None:
-        """Kill the running tool. yt-dlp spawns ffmpeg, so on Windows we take out
-        the whole tree — killing only the parent would leave ffmpeg running."""
+        """Kill the running tool and everything it spawned.
+
+        yt-dlp spawns ffmpeg, so the whole tree has to go — killing only the
+        parent leaves ffmpeg running, still holding and writing the output file,
+        which then can't be cleaned up.
+
+        Windows walks the tree at kill time with `taskkill /T`. POSIX signals the
+        process group that _spawn_kwargs established, giving it a SIGTERM to
+        close its files before escalating to SIGKILL.
+        """
         proc = self.active_proc
         if not proc or proc.poll() is not None:
             return
@@ -1042,7 +1165,20 @@ class YeetApp:
                     timeout=20,
                 )
             else:
-                proc.kill()
+                try:
+                    group = os.getpgid(proc.pid)
+                except (ProcessLookupError, PermissionError):
+                    # Already reaped, or not ours after all — fall back to the
+                    # single process rather than signalling a group we don't own.
+                    proc.kill()
+                    return
+                os.killpg(group, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # exited between the poll above and the signal; nothing to do
         except Exception as e:  # noqa: BLE001
             self.log(f"Couldn't stop the process cleanly: {e}")
 
@@ -1073,7 +1209,7 @@ class YeetApp:
             # Popen (not run) so STOP can kill it mid-lookup.
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                **_spawn_kwargs(),
             )
             self.active_proc = proc
             out, err = proc.communicate(timeout=120)
@@ -1109,7 +1245,7 @@ class YeetApp:
         try:
             proc = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                timeout=30, **_spawn_kwargs())
             if proc.returncode != 0:
                 return None
             streams = (json.loads(proc.stdout) or {}).get("streams") or []
@@ -1360,8 +1496,7 @@ class YeetApp:
         # on "Reading video info...".
         self._progress(step="Preparing download…")
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                text=True, bufsize=1, **_spawn_kwargs())
         self.active_proc = proc
         assert proc.stdout is not None
         saw_403 = False

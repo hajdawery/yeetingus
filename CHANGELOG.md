@@ -5,6 +5,59 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **macOS support.** Apple Silicon and Intel, built as a `.app` bundle. One
+  codebase — `backend/platform_paths.py` is the single place that knows what
+  differs between operating systems.
+- **`launch_yeetingus.sh`**, the macOS/Linux counterpart to the `.bat` shim. It
+  clears `PYTHONHOME` for the same reason, and puts the Homebrew prefixes back on
+  `PATH`, which a GUI process launched from Resolve does not inherit.
+- **Install ffmpeg button** in Settings on macOS, shown only while ffmpeg is
+  missing. Runs `brew install ffmpeg` on an explicit click, then picks the result
+  up without a restart.
+- **Certificate-store fallback.** The python.org macOS builds ship no CA bundle
+  until you run `Install Certificates.command`, so every download failed with
+  `CERTIFICATE_VERIFY_FAILED`. Falls back through certifi and the system bundle
+  at `/etc/ssl/cert.pem`. Verification is never disabled.
+- `.icns` icon generated at build time from `assets/logo.png` with `sips` and
+  `iconutil`, both part of macOS.
+
+### Changed
+
+- **ffmpeg is not downloaded on macOS** — `brew install ffmpeg` instead. There is
+  no Apple Silicon build whose provenance can be vouched for: ffmpeg.org's only
+  listed macOS source declines to build for ARM, and the binaries that circulate
+  all trace back to one site labelling them "for educational purposes only". See
+  [ffmpeg on macOS](README.md#-ffmpeg-on-macos). yt-dlp is still fetched
+  automatically everywhere — it publishes an official macOS binary.
+- **The Lua launcher is now cross-platform**, choosing its launch strategy at
+  runtime. On macOS it invokes `/bin/sh` by name: `open`-ing a `.sh` would hand
+  it to a text editor via file association, which looks exactly like a silent
+  failure.
+- The standalone installer is **opt-in on macOS** (`build.py --installer`). An
+  unsigned installer binary is what Gatekeeper blocks, so shipping one by default
+  would put a warning on the step meant to reassure.
+
+### Fixed
+
+- **STOP left ffmpeg running on macOS and Linux.** The process-tree kill was
+  Windows-only; everywhere else it killed just yt-dlp, leaving ffmpeg alive and
+  still writing the output file, which then couldn't be cleaned up. Processes are
+  now spawned into their own group and signalled as a unit.
+- **UI proportions were wrong on macOS.** Display scaling assumed a 96-DPI
+  baseline; macOS reports 72. The ratio came out at 0.75, which was clamped back
+  to 1.0 for pixels while fonts still took the 0.75 — text shrank ~15% while the
+  chrome around it didn't.
+- **`install.py --dev` always failed its own verification**, on every platform,
+  by insisting on a built app that `--dev` deliberately doesn't produce.
+- The window icon is set with `iconphoto` and a PNG off Windows; `iconbitmap`
+  takes a `.ico` only on Windows and silently did nothing elsewhere.
+
+---
+
 ## [1.0.0.1] — 2026-08-01
 
 Two fixes, both in whole-video downloads — the newest and least-exercised path.

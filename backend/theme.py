@@ -61,10 +61,22 @@ FONT, MONO = _platform_fonts()
 
 _SCALE = 1.0
 
+# The DPI Tk reports for an unscaled display, which differs by platform: Windows
+# works in 96-DPI pixels, macOS in 72-DPI points. Measuring against the wrong one
+# is not a near miss — on macOS, 72/96 gives 0.75, which set_scale clamps up to
+# 1.0 for pixels while the font scaling still takes the 0.75. Text shrinks, the
+# chrome doesn't, and the proportions this whole module exists to hold together
+# come apart.
+BASELINE_DPI = 72.0 if sys.platform == "darwin" else 96.0
+
 # Trim applied on top of the display's DPI scale. Windows' 150% is generous for a
 # utility window, so the whole UI is drawn slightly tighter than the OS setting
 # implies. Applied to fonts *and* pixels so proportions stay identical.
-DENSITY = 0.85
+#
+# Not applied on macOS: there is no equivalent inflation to compensate for
+# (Retina is handled transparently, and Tk reports logical points either way), so
+# trimming would just render everything 15% too small.
+DENSITY = 1.0 if sys.platform == "darwin" else 0.85
 
 
 def px(value: float) -> int:
@@ -84,9 +96,9 @@ def get_scale() -> float:
 
 
 def scale_from_dpi(widget: tk.Misc) -> float:
-    """Display scale as a ratio of the 96-DPI baseline (1.5 at 150%)."""
+    """Display scale as a ratio of the platform's baseline (1.5 at Windows 150%)."""
     try:
-        return float(widget.winfo_fpixels("1i")) / 96.0
+        return float(widget.winfo_fpixels("1i")) / BASELINE_DPI
     except Exception:  # noqa: BLE001
         return 1.0
 
@@ -101,8 +113,11 @@ def apply_ui_scale(root: tk.Misc) -> float:
     dpi_ratio = scale_from_dpi(root)
     set_scale(dpi_ratio * DENSITY)
     try:
-        # Tk's default is dpi/72; fold DENSITY into it so text tracks the chrome.
-        root.tk.call("tk", "scaling", (dpi_ratio * 96.0 / 72.0) * DENSITY)
+        # Tk's own scaling is points-per-pixel: baseline/72 at 100%. Fold DENSITY
+        # into it so text tracks the chrome. On macOS this comes out at ~1.0,
+        # which is Tk's default there — i.e. we leave a correct setting alone
+        # instead of overriding it with a Windows-derived number.
+        root.tk.call("tk", "scaling", (dpi_ratio * BASELINE_DPI / 72.0) * DENSITY)
     except tk.TclError:
         pass
     return get_scale()
