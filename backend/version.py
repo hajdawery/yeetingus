@@ -11,6 +11,7 @@ __version__ = "1.1.0"
 # install.py migrates a previous "YEET" install across and removes its leftovers.
 APP_NAME = "YEETingus"
 
-AUTHOR = "haej"
+AUTHOR = "haej / GRApedia"
+# The clickable credit in Settings points here; unchanged by the name above.
 AUTHOR_URL = "https://github.com/hajdawery"
 COPYRIGHT = f"© 2026 {AUTHOR}"
