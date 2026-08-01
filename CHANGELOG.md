@@ -45,6 +45,9 @@ additive, and the shared paths are the same code they always were.
 - The standalone installer is **opt-in on macOS** (`build.py --installer`). An
   unsigned installer binary is what Gatekeeper blocks, so shipping one by default
   would put a warning on the step meant to reassure.
+- Copyright now reads **haej / GRApedia**, in the app's Settings credit, the
+  macOS bundle's `Info.plist` and the Windows version resource. The GitHub link
+  behind the credit is unchanged.
 - **macOS builds use onedir, not onefile.** A `.app` is a directory by
   definition, so `--onefile` only buries a self-extracting binary inside it that
   unpacks to a temp directory on every launch — the signature covers the bundle
@@ -59,10 +62,14 @@ additive, and the shared paths are the same code they always were.
   Windows-only; everywhere else it killed just yt-dlp, leaving ffmpeg alive and
   still writing the output file, which then couldn't be cleaned up. Processes are
   now spawned into their own group and signalled as a unit.
-- **UI proportions were wrong on macOS.** Display scaling assumed a 96-DPI
-  baseline; macOS reports 72. The ratio came out at 0.75, which was clamped back
-  to 1.0 for pixels while fonts still took the 0.75 — text shrank ~15% while the
-  chrome around it didn't.
+- **UI proportions were wrong on macOS** — the window came out 33% too large,
+  which made correctly-sized text look small beside it. Two different baselines
+  were sharing one constant: the pixel constants in `theme.py` are authored at
+  96 DPI and must always be divided by 96, while Tk's `scaling` is
+  pixels-per-point and must be divided by 72. A `max(1.0, …)` floor in
+  `set_scale` then discarded the 0.75 macOS legitimately needs, reading as a
+  guard against absurd input. Now 1.02× chrome and 1.00× text against Windows at
+  100%. `YEET_UI_SCALE` and `YEET_FONT_SCALE` tune either without a rebuild.
 - **`install.py --dev` always failed its own verification**, on every platform,
   by insisting on a built app that `--dev` deliberately doesn't produce.
 - The window icon is set with `iconphoto` and a PNG off Windows; `iconbitmap`
