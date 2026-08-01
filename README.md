@@ -9,7 +9,7 @@
 Paste a link, set an in and out point, hit one button. No browser, no downloads folder
 shuffling, no manual importing.
 
-![version](https://img.shields.io/badge/version-1.0.0.1-edff00?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-1.1.0-edff00?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![python](https://img.shields.io/badge/build%20with-Python%203.6–3.13-3776ab?style=flat-square&labelColor=1a1a1a)

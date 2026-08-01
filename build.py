@@ -144,6 +144,40 @@ def make_icns() -> str | None:
     return out if os.path.isfile(out) else None
 
 
+def set_bundle_metadata(bundle: str) -> None:
+    """Write version and copyright into the bundle's Info.plist.
+
+    PyInstaller has no CLI flag for these, so a bundle otherwise ships as
+    version 0.0.0 with no copyright — the macOS equivalent of the blank
+    Properties dialog that write_version_resource exists to prevent on Windows,
+    and the same signal to anyone deciding whether to trust an unsigned app.
+
+    MUST run before codesign_adhoc: editing Info.plist invalidates any existing
+    signature, so signing has to come after this, not before.
+    """
+    import version as v
+
+    plist = os.path.join(bundle, "Contents", "Info.plist")
+    if not os.path.isfile(plist):
+        print(f"(no Info.plist at {plist} — skipping metadata)")
+        return
+    entries = [
+        ("CFBundleShortVersionString", v.__version__),
+        ("CFBundleVersion", v.__version__),
+        ("NSHumanReadableCopyright", v.COPYRIGHT),
+    ]
+    for key, value in entries:
+        # -replace creates the key when absent, so no need to probe first.
+        rc = subprocess.run(
+            ["plutil", "-replace", key, "-string", value, plist],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if rc.returncode != 0:
+            detail = (rc.stderr or b"").decode(errors="replace").strip()
+            print(f"(couldn't set {key}: {detail})")
+            return
+    print(f"Bundle metadata: version {v.__version__}, {v.COPYRIGHT}")
+
+
 def codesign_adhoc(bundle: str) -> None:
     """Ad-hoc sign the bundle so macOS will run it locally.
 
@@ -274,6 +308,9 @@ def main() -> int:
         size = sum(os.path.getsize(os.path.join(root, f))
                    for root, _, files in os.walk(app) for f in files
                    if not os.path.islink(os.path.join(root, f))) / 1048576
+        # Order matters: the plist edit would invalidate a signature applied
+        # before it, so metadata first, then sign.
+        set_bundle_metadata(app)
         codesign_adhoc(app)
     else:
         size = os.path.getsize(app) / 1048576

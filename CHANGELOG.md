@@ -5,7 +5,10 @@ Notable changes to YEETingus. Format follows
 
 ---
 
-## [Unreleased]
+## [1.1.0] — 2026-08-01
+
+macOS support. Windows behaviour is unchanged — every platform difference is
+additive, and the shared paths are the same code they always were.
 
 ### Added
 
