@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-build.py — freeze YEETingus into a standalone Windows exe.
+build.py — freeze YEETingus into a standalone application.
 
-MUST be run with a Python that Resolve's fusionscript.dll can be loaded into
-(currently 3.6-3.13 — see resolve_bridge.MAX_PY): the frozen exe embeds whichever
+MUST be run with a Python that Resolve's fusionscript library can be loaded into
+(currently 3.6-3.13 — see resolve_bridge.MAX_PY): the frozen app embeds whichever
 interpreter builds it.
 
-    py -3.13 build.py
+    Windows:  py -3.13 build.py        ->  dist\\YEETingus.exe
+    macOS:    python3.13 build.py      ->  dist/YEETingus.app
 
-Output: dist\\YEETingus.exe — no Python needed on the target machine. yt-dlp and
-ffmpeg are fetched on first run, so they aren't bundled.
+No Python is needed on the target machine. yt-dlp is fetched on first run and
+ffmpeg is never bundled, so neither is included here — see backend/deps.py for
+why that differs by platform.
 """
 
 from __future__ import annotations
@@ -24,9 +26,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRY = os.path.join(HERE, "backend", "yeet_app.py")
 
 sys.path.insert(0, os.path.join(HERE, "backend"))
+import platform_paths as pp  # noqa: E402
 from version import APP_NAME as NAME  # noqa: E402
 
+WINDOWS = pp.WINDOWS
+MACOS = pp.MACOS
+
 INSTALLER_NAME = f"Install-{NAME}"
+
+# What PyInstaller leaves in dist/ for us to install. On macOS --windowed
+# produces a bundle directory rather than a single file.
+APP_ARTIFACT = f"{NAME}.exe" if WINDOWS else (f"{NAME}.app" if MACOS else NAME)
+
+# Reverse-DNS identifier for the macOS bundle. Launch Services keys off this, so
+# it must stay stable across releases or every build looks like a new app.
+BUNDLE_ID = "com.github.hajdawery.yeetingus"
 
 
 def _version_tuple(text: str) -> tuple[int, int, int, int]:
@@ -87,6 +101,104 @@ VSVersionInfo(
     return path
 
 
+def make_icns() -> str | None:
+    """Build an .icns from assets/logo.png, returning its path.
+
+    macOS won't take the .ico the Windows build uses. sips and iconutil are both
+    part of the base system, so this needs nothing installed — which keeps the
+    icon a build step rather than a checked-in binary that could drift from the
+    logo beside it.
+
+    The source logo is 256x256, so the 512 and 1024 slots a modern bundle would
+    like are not generated: upscaling would produce a blurry icon rather than a
+    sharp one. Replace assets/logo.png with a 1024x1024 original to get them.
+    """
+    logo = os.path.join(HERE, "assets", "logo.png")
+    if not os.path.isfile(logo):
+        return None
+    out = os.path.join(HERE, "build", f"{NAME.lower()}.icns")
+    iconset = os.path.join(HERE, "build", f"{NAME.lower()}.iconset")
+    shutil.rmtree(iconset, ignore_errors=True)
+    os.makedirs(iconset, exist_ok=True)
+
+    # (pixel size, filename) — the @2x variants are the same pixels at half the
+    # nominal size, which is what Retina asks for.
+    wanted = [
+        (16, "icon_16x16.png"), (32, "icon_16x16@2x.png"),
+        (32, "icon_32x32.png"), (64, "icon_32x32@2x.png"),
+        (128, "icon_128x128.png"), (256, "icon_128x128@2x.png"),
+        (256, "icon_256x256.png"),
+    ]
+    try:
+        for size, name in wanted:
+            subprocess.run(
+                ["sips", "-z", str(size), str(size), logo, "--out",
+                 os.path.join(iconset, name)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["iconutil", "-c", "icns", iconset, "-o", out], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"(couldn't build .icns: {e} — building without an icon)")
+        return None
+    finally:
+        shutil.rmtree(iconset, ignore_errors=True)
+    return out if os.path.isfile(out) else None
+
+
+def set_bundle_metadata(bundle: str) -> None:
+    """Write version and copyright into the bundle's Info.plist.
+
+    PyInstaller has no CLI flag for these, so a bundle otherwise ships as
+    version 0.0.0 with no copyright — the macOS equivalent of the blank
+    Properties dialog that write_version_resource exists to prevent on Windows,
+    and the same signal to anyone deciding whether to trust an unsigned app.
+
+    MUST run before codesign_adhoc: editing Info.plist invalidates any existing
+    signature, so signing has to come after this, not before.
+    """
+    import version as v
+
+    plist = os.path.join(bundle, "Contents", "Info.plist")
+    if not os.path.isfile(plist):
+        print(f"(no Info.plist at {plist} — skipping metadata)")
+        return
+    entries = [
+        ("CFBundleShortVersionString", v.__version__),
+        ("CFBundleVersion", v.__version__),
+        ("NSHumanReadableCopyright", v.COPYRIGHT),
+    ]
+    for key, value in entries:
+        # -replace creates the key when absent, so no need to probe first.
+        rc = subprocess.run(
+            ["plutil", "-replace", key, "-string", value, plist],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if rc.returncode != 0:
+            detail = (rc.stderr or b"").decode(errors="replace").strip()
+            print(f"(couldn't set {key}: {detail})")
+            return
+    print(f"Bundle metadata: version {v.__version__}, {v.COPYRIGHT}")
+
+
+def codesign_adhoc(bundle: str) -> None:
+    """Ad-hoc sign the bundle so macOS will run it locally.
+
+    This is NOT notarisation and does not get you past Gatekeeper on someone
+    else's machine — a downloaded copy still needs right-click -> Open, or a
+    Developer ID certificate and a notarisation pass. What it does buy is a
+    valid code signature on the machine that built it, without which recent
+    macOS may refuse to launch the bundle at all after PyInstaller rewrites it.
+    """
+    try:
+        subprocess.run(["codesign", "--force", "--deep", "--sign", "-", bundle],
+                       check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE)
+        print("Ad-hoc signed (local use only — not notarised).")
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode(errors="replace").strip()
+        print(f"(codesign failed: {detail or e} — the app may not launch)")
+    except FileNotFoundError:
+        print("(codesign not found — skipping; is Xcode CLT installed?)")
+
+
 def main() -> int:
     # The supported range lives in resolve_bridge so there's one place to bump.
     sys.path.insert(0, os.path.join(HERE, "backend"))
@@ -114,10 +226,21 @@ def main() -> int:
     for d in ("build", "dist"):
         shutil.rmtree(os.path.join(HERE, d), ignore_errors=True)
 
+    # onefile on Windows, onedir on macOS.
+    #
+    # A .app is a directory by definition, so --onefile can't make it one file;
+    # what it actually does is bury a self-extracting binary inside the bundle,
+    # which then unpacks to a temp directory on every launch and runs from there.
+    # That fights the platform: the signature covers the bundle while the code
+    # that actually executes lives somewhere unsigned and transient. PyInstaller
+    # calls this out ("clashes with macOS's security") and makes it a hard error
+    # in v7.0. onedir is the shape macOS expects, and it starts faster.
+    packaging = "--onefile" if WINDOWS else "--onedir"
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
-        "--onefile",
+        packaging,
         "--windowed",                 # no console window
         "--name", NAME,
         "--paths", os.path.join(HERE, "backend"),
@@ -128,48 +251,93 @@ def main() -> int:
         "--hidden-import", "resolve_bridge",
         "--hidden-import", "naming",
         "--hidden-import", "version",
+        "--hidden-import", "platform_paths",
         # trim obvious dead weight
         "--exclude-module", "numpy",
         "--exclude-module", "pytest",
         "--exclude-module", "setuptools",
         ENTRY,
     ]
-    cmd += ["--version-file", write_version_resource(
-        NAME, f"{NAME} — YouTube/Twitch clips into DaVinci Resolve")]
 
-    # Icon: used for the exe itself, and bundled so the running window/taskbar
-    # can set it too (PyInstaller doesn't expose --icon at runtime).
-    icon = os.path.join(HERE, "assets", f"{NAME.lower()}.ico")
-    if os.path.isfile(icon):
+    # The Windows version resource fills in the exe's Properties dialog; there is
+    # no macOS equivalent (the bundle's Info.plist covers it, and PyInstaller
+    # writes that from --name and --osx-bundle-identifier).
+    if WINDOWS:
+        cmd += ["--version-file", write_version_resource(
+            NAME, f"{NAME} — YouTube/Twitch clips into DaVinci Resolve")]
+    elif MACOS:
+        cmd += ["--osx-bundle-identifier", BUNDLE_ID]
+        # PyInstaller targets the host architecture by default, so a build made
+        # on Apple Silicon runs only on Apple Silicon. Fine for your own machine;
+        # not fine for a release asset that says "macOS". --universal produces a
+        # universal2 bundle instead, which needs every embedded framework to
+        # carry both slices — the python.org builds do, Homebrew's do not.
+        if "--universal" in sys.argv:
+            cmd += ["--target-arch", "universal2"]
+            print("Target: universal2 (Apple Silicon + Intel)")
+        else:
+            import platform as _platform
+            print(f"Target: {_platform.machine()} only "
+                  "(pass --universal for a release build)")
+
+    # Icon: used for the app itself, and bundled so the running window/taskbar
+    # can set it too (PyInstaller doesn't expose --icon at runtime). The .ico is
+    # always added as data since theme.py loads it at runtime on every platform.
+    ico = os.path.join(HERE, "assets", f"{NAME.lower()}.ico")
+    icon = make_icns() if MACOS else (ico if os.path.isfile(ico) else None)
+    if icon:
         cmd += ["--icon", icon]
-        cmd += ["--add-data", f"{icon}{os.pathsep}assets"]
         print(f"Icon: {icon}")
     else:
-        print(f"(no icon at {icon} — building without one)")
+        print("(no usable icon — building without one)")
+    if os.path.isfile(ico):
+        cmd += ["--add-data", f"{ico}{os.pathsep}assets"]
 
     print("Running:", " ".join(cmd))
     result = subprocess.run(cmd, cwd=HERE)
     if result.returncode != 0:
         return result.returncode
 
-    exe = os.path.join(HERE, "dist", NAME + ".exe")
-    if not os.path.isfile(exe):
-        print(f"ERROR: build reported success but {exe} is missing.")
+    app = os.path.join(HERE, "dist", APP_ARTIFACT)
+    exists = os.path.isdir(app) if MACOS else os.path.isfile(app)
+    if not exists:
+        print(f"ERROR: build reported success but {app} is missing.")
         return 1
 
-    size = os.path.getsize(exe) / 1048576
-    print(f"\nBuilt {exe}  ({size:.1f} MB)")
+    if MACOS:
+        size = sum(os.path.getsize(os.path.join(root, f))
+                   for root, _, files in os.walk(app) for f in files
+                   if not os.path.islink(os.path.join(root, f))) / 1048576
+        # Order matters: the plist edit would invalidate a signature applied
+        # before it, so metadata first, then sign.
+        set_bundle_metadata(app)
+        codesign_adhoc(app)
+    else:
+        size = os.path.getsize(app) / 1048576
+    print(f"\nBuilt {app}  ({size:.1f} MB)")
 
-    if "--no-installer" in sys.argv:
-        print("Next:  py -3.13 install.py    (copies it into place + adds the menu entry)")
+    install_cmd = "py -3.13 install.py" if WINDOWS else "python3.13 install.py"
+
+    # The standalone installer is the default on Windows, where it saves users
+    # from needing Python. On macOS it is opt-in: an unsigned, un-notarised
+    # installer binary is exactly what Gatekeeper blocks on download, so it would
+    # add a scary warning to the one step that is supposed to reassure. Until
+    # there's a Developer ID to sign with, `python3 install.py` is the better
+    # macOS story — and build.py should not pretend otherwise.
+    skip = "--no-installer" in sys.argv or (MACOS and "--installer" not in sys.argv)
+    if skip:
+        print(f"\nNext:  {install_cmd}    (copies it into place + adds the menu entry)")
+        if MACOS and "--no-installer" not in sys.argv:
+            print("       (pass --installer to build a standalone installer too)")
         return 0
 
-    rc = build_installer(exe, icon)
+    rc = build_installer(app, icon)
     if rc != 0:
         return rc
 
-    print("\nNext:  run dist\\%s to install, or `py -3.13 install.py` from here."
-          % (INSTALLER_NAME + ".exe"))
+    sep = "\\" if WINDOWS else "/"
+    installer = INSTALLER_NAME + (".exe" if WINDOWS else "")
+    print(f"\nNext:  run dist{sep}{installer} to install, or `{install_cmd}` from here.")
     return 0
 
 
@@ -181,11 +349,15 @@ def build_installer(app_exe: str, icon: str) -> int:
     for dev installs, rather than a second implementation that could drift.
     """
     print("\n--- installer ---")
+    shim = os.path.join(HERE, "resolve",
+                        f"launch_{NAME.lower()}" + (".bat" if WINDOWS else ".sh"))
     data = [
-        (app_exe, "."),
-        (os.path.join(HERE, "resolve", f"launch_{NAME.lower()}.bat"), "."),
         (os.path.join(HERE, "resolve", f"{NAME}.lua.in"), "."),
         (os.path.join(HERE, "backend", "version.py"), "."),
+        # install.py imports this for the per-OS paths, so it has to travel with
+        # it — the installer is frozen without the backend package on sys.path.
+        (os.path.join(HERE, "backend", "platform_paths.py"), "."),
+        (shim, "."),
     ]
     missing = [src for src, _ in data if not os.path.isfile(src)]
     if missing:
@@ -204,11 +376,23 @@ def build_installer(app_exe: str, icon: str) -> int:
         "--exclude-module", "pytest",
         "--exclude-module", "setuptools",
     ]
-    cmd += ["--version-file", write_version_resource(
-        INSTALLER_NAME, f"{NAME} installer")]
+    if WINDOWS:
+        cmd += ["--version-file", write_version_resource(
+            INSTALLER_NAME, f"{NAME} installer")]
     for src, dest in data:
         cmd += ["--add-data", f"{src}{os.pathsep}{dest}"]
-    if os.path.isfile(icon):
+
+    # The app itself rides inside the installer, and install.py's resource()
+    # looks it up by basename at the bundle root.
+    #
+    # The destination differs by kind, and getting it wrong is silent: given a
+    # directory source, --add-data copies its *contents* into the destination,
+    # so "YEETingus.app:." would splatter Contents/ across the bundle root and
+    # lose the bundle. Naming the destination reconstitutes the directory.
+    app_dest = f"{NAME}.app" if MACOS else "."
+    cmd += ["--add-data", f"{app_exe}{os.pathsep}{app_dest}"]
+
+    if icon and os.path.isfile(icon):
         cmd += ["--icon", icon]
     cmd.append(os.path.join(HERE, "install.py"))
 
@@ -216,7 +400,7 @@ def build_installer(app_exe: str, icon: str) -> int:
     if result.returncode != 0:
         return result.returncode
 
-    out = os.path.join(HERE, "dist", INSTALLER_NAME + ".exe")
+    out = os.path.join(HERE, "dist", INSTALLER_NAME + (".exe" if WINDOWS else ""))
     if not os.path.isfile(out):
         print(f"ERROR: installer build reported success but {out} is missing.")
         return 1

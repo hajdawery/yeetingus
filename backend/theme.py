@@ -9,6 +9,7 @@ draw themselves on a Canvas behind their content.
 from __future__ import annotations
 
 import math
+import os
 import sys
 import tkinter as tk
 
@@ -61,10 +62,44 @@ FONT, MONO = _platform_fonts()
 
 _SCALE = 1.0
 
+# Two different baselines, which is the whole subtlety here. Sharing one constant
+# between them is what made the first macOS build come out with 33%-oversized
+# chrome around correctly-sized text.
+#
+# AUTHORED_DPI is a fact about *this codebase*: every pixel constant below was
+# drawn for a 96-DPI display. It does not vary by platform.
+#
+# POINTS_PER_INCH is a fact about *typography*: a point is 1/72 inch, everywhere.
+# Tk's own "scaling" is pixels-per-point, so it is measured against this.
+#
+# Tk reports 96 units/inch on Windows at 100% and 72 on macOS, so the same
+# authored 38 comes out 33% physically larger on a Mac unless it is divided by 96
+# rather than by whatever the display happens to report.
+AUTHORED_DPI = 96.0
+POINTS_PER_INCH = 72.0
+
 # Trim applied on top of the display's DPI scale. Windows' 150% is generous for a
 # utility window, so the whole UI is drawn slightly tighter than the OS setting
 # implies. Applied to fonts *and* pixels so proportions stay identical.
-DENSITY = 0.85
+#
+# 1.0 on macOS: with the divisor above correct, pixels already land at 72/96 =
+# 0.75 and text at parity with Windows. There is no extra inflation to trim, and
+# trimming anyway is what made the text look undersized.
+DENSITY = 1.0 if sys.platform == "darwin" else 0.85
+
+# Optional overrides for dialling the UI in without a rebuild:
+#   YEET_UI_SCALE=0.8   shrink or grow the chrome
+#   YEET_FONT_SCALE=1.1 shrink or grow the text, independently
+# Both multiply the computed values. Unset means "use the computed value".
+
+
+def _env_factor(name: str) -> float:
+    """A positive multiplier from the environment, or 1.0 if unset/invalid."""
+    try:
+        value = float(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return 1.0
+    return value if 0.1 <= value <= 5.0 else 1.0
 
 
 def px(value: float) -> int:
@@ -73,9 +108,15 @@ def px(value: float) -> int:
 
 
 def set_scale(factor: float) -> None:
-    """Set the pixel scale. Call before building widgets; clamped to 1.0-3.0."""
+    """Set the pixel scale. Call before building widgets; clamped to 0.5-3.0.
+
+    The floor is 0.5, not 1.0. A 1.0 floor looks like a harmless guard against
+    an absurd value, but macOS legitimately needs 72/96 = 0.75 — so the clamp
+    silently discarded the correct scale and rendered every button, pad and
+    radius a third too large.
+    """
     global _SCALE
-    _SCALE = max(1.0, min(3.0, float(factor)))
+    _SCALE = max(0.5, min(3.0, float(factor)))
 
 
 def get_scale() -> float:
@@ -83,12 +124,18 @@ def get_scale() -> float:
     return _SCALE
 
 
-def scale_from_dpi(widget: tk.Misc) -> float:
-    """Display scale as a ratio of the 96-DPI baseline (1.5 at 150%)."""
+def units_per_inch(widget: tk.Misc) -> float:
+    """How many Tk units the display puts in an inch (96 on Windows, 72 on macOS)."""
     try:
-        return float(widget.winfo_fpixels("1i")) / 96.0
+        return float(widget.winfo_fpixels("1i"))
     except Exception:  # noqa: BLE001
-        return 1.0
+        return AUTHORED_DPI
+
+
+def scale_from_dpi(widget: tk.Misc) -> float:
+    """Pixel scale for the authored constants: 1.0 at Windows 100%, 1.5 at 150%,
+    0.75 on macOS — where a Tk unit is a 1/72" point rather than a 1/96" pixel."""
+    return units_per_inch(widget) / AUTHORED_DPI
 
 
 def apply_ui_scale(root: tk.Misc) -> float:
@@ -98,11 +145,19 @@ def apply_ui_scale(root: tk.Misc) -> float:
     rewriting every font size: setting it once here keeps DENSITY applying evenly
     to text and chrome, so the layout shrinks without distorting.
     """
-    dpi_ratio = scale_from_dpi(root)
-    set_scale(dpi_ratio * DENSITY)
+    per_inch = units_per_inch(root)
+
+    # Chrome: authored constants divided by the DPI they were authored at.
+    set_scale((per_inch / AUTHORED_DPI) * DENSITY * _env_factor("YEET_UI_SCALE"))
+
     try:
-        # Tk's default is dpi/72; fold DENSITY into it so text tracks the chrome.
-        root.tk.call("tk", "scaling", (dpi_ratio * 96.0 / 72.0) * DENSITY)
+        # Text: Tk's "scaling" is pixels-per-point, so it is measured against
+        # 72 rather than 96. This lands on Tk's own default on both platforms
+        # (1.333 on Windows at 100%, 1.0 on macOS) before DENSITY is applied,
+        # which is the sign it's being computed the right way round.
+        root.tk.call("tk", "scaling",
+                     (per_inch / POINTS_PER_INCH) * DENSITY
+                     * _env_factor("YEET_FONT_SCALE"))
     except tk.TclError:
         pass
     return get_scale()

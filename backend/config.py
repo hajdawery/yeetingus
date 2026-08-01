@@ -1,8 +1,10 @@
 """
 config.py — persisted user settings.
 
-Stored as JSON next to the app in %LOCALAPPDATA%\\YEETingus\\settings.json, so it
-survives reinstalls (install.py only replaces the exe and launcher).
+Stored as JSON in the platform's per-user application-data folder
+(%LOCALAPPDATA%\\YEETingus on Windows, ~/Library/Application Support/YEETingus on
+macOS), so it survives reinstalls — install.py only replaces the app and
+launcher.
 """
 
 from __future__ import annotations
@@ -14,52 +16,16 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import platform_paths as _pp  # noqa: E402
 from version import APP_NAME  # noqa: E402
 
-_APP_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), APP_NAME)
+_APP_DIR = _pp.app_data_dir()
 
 SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
 
-
-def _windows_videos_dir() -> str:
-    """The real Videos folder, which users often relocate to another drive."""
-    try:
-        import winreg
-        key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
-            path, _ = winreg.QueryValueEx(handle, "My Video")
-        if path and os.path.isdir(path):
-            return path
-    except Exception:  # noqa: BLE001 — registry missing/renamed; fall through
-        pass
-    return os.path.join(os.path.expanduser("~"), "Videos")
-
-
-def _xdg_videos_dir() -> str:
-    """Linux: honour XDG_VIDEOS_DIR if the user has configured one."""
-    conf = os.path.join(os.path.expanduser("~"), ".config", "user-dirs.dirs")
-    try:
-        with open(conf, "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("XDG_VIDEOS_DIR"):
-                    raw = line.split("=", 1)[1].strip().strip('"')
-                    path = os.path.expandvars(raw.replace("$HOME", "~"))
-                    path = os.path.expanduser(path)
-                    if os.path.isdir(path):
-                        return path
-    except OSError:
-        pass
-    return os.path.join(os.path.expanduser("~"), "Videos")
-
-
-def videos_dir() -> str:
-    """The platform's videos folder. macOS calls it Movies, not Videos."""
-    if sys.platform == "win32":
-        return _windows_videos_dir()
-    if sys.platform == "darwin":
-        return os.path.join(os.path.expanduser("~"), "Movies")
-    return _xdg_videos_dir()
+# Re-exported so callers don't need to know which module owns the platform
+# branching; this was config's own API before the split.
+videos_dir = _pp.videos_dir
 
 
 def default_download_dir() -> str:

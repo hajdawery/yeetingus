@@ -2,20 +2,22 @@
 """
 install.py — put YEETingus where Resolve and the launcher expect it.
 
-    py -3.13 build.py      # produces dist\\YEETingus.exe
-    py -3.13 install.py    # installs it + adds the Resolve menu entry
+    Windows:  py -3.13 build.py       then  py -3.13 install.py
+    macOS:    python3.13 build.py     then  python3.13 install.py
 
-Installs:
-  * dist\\YEETingus.exe    ->  %LOCALAPPDATA%\\YEETingus\\YEETingus.exe
-  * launch_yeetingus.bat  ->  beside the exe (clears PYTHONHOME first)
-  * YEETingus.lua         ->  Resolve's Scripts\\Utility folder
-                              (Workspace -> Scripts -> Utility -> YEETingus)
+Installs (paths shown for each platform):
+  * the app     ->  %LOCALAPPDATA%\\YEETingus\\YEETingus.exe
+                    ~/Library/Application Support/YEETingus/YEETingus.app
+  * the shim    ->  beside the app (clears PYTHONHOME first)
+                    launch_yeetingus.bat / launch_yeetingus.sh
+  * YEETingus.lua ->  Resolve's Scripts/Utility folder
+                      (Workspace -> Scripts -> Utility -> YEETingus)
 
-Also migrates a previous "YEET" install: the downloaded tool cache and settings
-are moved across, and the old exe, shim and menu entry are removed so Resolve
-doesn't show two entries.
+Also migrates a previous "YEET" install on Windows: the downloaded tool cache
+and settings are moved across, and the old exe, shim and menu entry are removed
+so Resolve doesn't show two entries.
 
-Pass --dev to skip the exe and wire the menu entry to the source script instead.
+Pass --dev to skip the built app and wire the menu entry to the source instead.
 """
 
 from __future__ import annotations
@@ -23,16 +25,31 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import sys
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# True when running as the frozen Install-<App>.exe rather than from the repo.
+# True when running as the frozen Install-<App> binary rather than from the repo.
 FROZEN = getattr(sys, "frozen", False)
 
-# The app was called "YEET" up to v1.0.0; used only for one-time migration.
+# The app was called "YEET" up to v1.0.0; used only for one-time migration, and
+# only on Windows, which is the only platform it ever shipped for.
 LEGACY_NAME = "YEET"
+
+# platform_paths is the single source of truth for per-OS locations. Frozen, it
+# is unpacked flat beside the other bundled resources, so make that directory
+# importable before reaching for it.
+if FROZEN:
+    sys.path.insert(0, getattr(sys, "_MEIPASS", HERE))
+else:
+    sys.path.insert(0, os.path.join(HERE, "backend"))
+
+import platform_paths as pp  # noqa: E402
+
+WINDOWS = pp.WINDOWS
+MACOS = pp.MACOS
 
 
 def resource(*parts: str) -> str:
@@ -71,33 +88,29 @@ def read_app_name() -> str:
 
 
 APP = read_app_name()
-EXE_NAME = f"{APP}.exe"
-SHIM_NAME = f"launch_{APP.lower()}.bat"
+
+# What build.py produces, and what we copy into place. On macOS that is a .app
+# bundle — a directory, not a file — which is why every check below asks about
+# "the app" rather than calling os.path.isfile.
+EXE_NAME = f"{APP}.exe" if WINDOWS else (f"{APP}.app" if MACOS else APP)
+SHIM_NAME = f"launch_{APP.lower()}" + (".bat" if WINDOWS else ".sh")
 LUA_NAME = f"{APP}.lua"
+
+# A macOS app bundle is a directory; everywhere else the app is a single file.
+APP_IS_BUNDLE = MACOS
 
 
 def app_dir() -> str:
     """Where the app and its shim are installed."""
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, APP)
-
-def _find_scripts_dir() -> str:
-    """Resolve's user Scripts folder. Per-user location first (no admin rights
-    needed), then the machine-wide one some installs use."""
-    candidates = [
-        os.path.join(os.environ.get("APPDATA", ""), "Blackmagic Design",
-                     "DaVinci Resolve", "Support", "Fusion", "Scripts", "Utility"),
-        os.path.join(os.environ.get("PROGRAMDATA", ""), "Blackmagic Design",
-                     "DaVinci Resolve", "Fusion", "Scripts", "Utility"),
-    ]
-    for path in candidates:
-        if path and os.path.isdir(path):
-            return path
-    # Nothing exists yet — return the per-user path so we can create it.
-    return candidates[0]
+    return pp.app_data_dir()
 
 
-SCRIPTS_DIR = _find_scripts_dir()
+def app_exists(path: str) -> bool:
+    """Does the installed app exist? Bundles are directories, so isfile lies."""
+    return os.path.isdir(path) if APP_IS_BUNDLE else os.path.isfile(path)
+
+
+SCRIPTS_DIR = pp.scripts_dir()
 
 
 def migrate_legacy() -> None:
@@ -107,7 +120,13 @@ def migrate_legacy() -> None:
     nothing has to be re-downloaded or reconfigured. Our own old artefacts — the
     exe, shim, launcher log and Resolve menu entry — are deleted, since leaving
     the old .lua behind would give Resolve two entries.
+
+    Windows only: "YEET" never shipped for any other platform, so there is
+    nothing anywhere else to migrate from.
     """
+    if not WINDOWS:
+        return
+
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     old_dir = os.path.join(base, LEGACY_NAME)
     new_dir = app_dir()
@@ -163,8 +182,26 @@ def migrate_legacy() -> None:
                   f"and {APP}.")
 
 
+def _make_executable(path: str) -> None:
+    """Set the execute bit. No-op on Windows, required for the .sh shim."""
+    if WINDOWS:
+        return
+    mode = os.stat(path).st_mode
+    os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _python_command() -> str:
+    """How to invoke this interpreter from a shell script.
+
+    sys.executable rather than a bare "python3": a --dev shim is launched by
+    Resolve, not from the user's shell, so whatever "python3" resolves to there
+    may not be the interpreter that could actually load fusionscript.
+    """
+    return sys.executable
+
+
 def install_dev_shim() -> str | None:
-    """--dev: point the shim at the source script instead of the exe.
+    """--dev: point the shim at the source script instead of the built app.
 
     Baking the path into the shim keeps the Lua launcher unchanged and avoids
     depending on an environment variable, which Resolve's Lua host doesn't
@@ -177,44 +214,77 @@ def install_dev_shim() -> str | None:
     dest_dir = app_dir()
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, SHIM_NAME)
-    body = (
-        "@echo off\r\n"
-        f"rem DEV shim written by install.py --dev; runs {APP} from source.\r\n"
-        'set "PYTHONHOME="\r\n'
-        'set "PYTHONPATH="\r\n'
-        'set "PYTHONSTARTUP="\r\n'
-        'set "PYTHONEXECUTABLE="\r\n'
-        'set "PYTHONNOUSERSITE="\r\n'
-        f'start "" py -3.13 "{script}" %*\r\n'
-    )
-    with open(dest, "w", encoding="ascii", errors="replace", newline="") as fh:
+
+    if WINDOWS:
+        body = (
+            "@echo off\r\n"
+            f"rem DEV shim written by install.py --dev; runs {APP} from source.\r\n"
+            'set "PYTHONHOME="\r\n'
+            'set "PYTHONPATH="\r\n'
+            'set "PYTHONSTARTUP="\r\n'
+            'set "PYTHONEXECUTABLE="\r\n'
+            'set "PYTHONNOUSERSITE="\r\n'
+            f'start "" py -3.13 "{script}" %*\r\n'
+        )
+        newline = ""
+    else:
+        python = _python_command()
+        body = (
+            "#!/bin/sh\n"
+            f"# DEV shim written by install.py --dev; runs {APP} from source.\n"
+            "unset PYTHONHOME\n"
+            "unset PYTHONPATH\n"
+            "unset PYTHONSTARTUP\n"
+            "unset PYTHONEXECUTABLE\n"
+            "unset PYTHONNOUSERSITE\n"
+            "unset PYTHONDONTWRITEBYTECODE\n"
+            '# Homebrew prefixes are absent from a GUI process\'s inherited PATH.\n'
+            'PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"\n'
+            "export PATH\n"
+            f'exec "{python}" "{script}" "$@"\n'
+        )
+        newline = "\n"
+
+    with open(dest, "w", encoding="utf-8", errors="replace", newline=newline) as fh:
         fh.write(body)
+    _make_executable(dest)
     print(f"+ dev shim  -> {dest}")
-    print(f"    runs    -> py -3.13 {script}")
+    print(f"    runs    -> {'py -3.13' if WINDOWS else _python_command()} {script}")
     return dest
 
 
 def install_exe() -> str | None:
-    """Copy the built exe and its launch shim into place. Returns the exe path."""
+    """Copy the built app and its launch shim into place. Returns the app path."""
     src = resource("dist", EXE_NAME)
-    if not os.path.isfile(src):
+    if not app_exists(src):
         return None
     dest_dir = app_dir()
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, EXE_NAME)
     try:
-        shutil.copy2(src, dest)
+        if APP_IS_BUNDLE:
+            # copytree won't merge into an existing tree, and a stale bundle left
+            # in place would keep old resources alongside the new ones.
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest, symlinks=True)
+        else:
+            shutil.copy2(src, dest)
     except PermissionError:
         print(f"! Could not overwrite {dest} — close {APP} if it's running, then retry.")
         return None
+    except (OSError, shutil.Error) as e:
+        print(f"! Could not install to {dest}: {e}")
+        return None
     print(f"+ app       -> {dest}")
 
-    # The shim must sit next to the exe; it launches "%~dp0<App>.exe" with
-    # PYTHONHOME cleared, without which the exe segfaults under Resolve.
+    # The shim must sit next to the app; it launches it with PYTHONHOME cleared,
+    # without which the frozen build segfaults under Resolve.
     shim_src = resource("resolve", SHIM_NAME)
     if os.path.isfile(shim_src):
         shim_dest = os.path.join(dest_dir, SHIM_NAME)
         shutil.copy2(shim_src, shim_dest)
+        _make_executable(shim_dest)
         print(f"+ shim      -> {shim_dest}")
     else:
         print(f"! missing {shim_src} — the Resolve menu entry will fall back to an inline scrub")
@@ -250,7 +320,7 @@ def install_launcher() -> str | None:
         text = fh.read()
     for token, value in (
         ("@@YEET_DIR@@", target_dir),
-        ("@@BAT@@", os.path.join(target_dir, SHIM_NAME)),
+        ("@@SHIM@@", os.path.join(target_dir, SHIM_NAME)),
         ("@@EXE@@", os.path.join(target_dir, EXE_NAME)),
         ("@@LOG@@", os.path.join(target_dir, "launcher.log")),
         ("@@APP_NAME@@", APP),
@@ -266,33 +336,53 @@ def install_launcher() -> str | None:
 
     dest = os.path.join(SCRIPTS_DIR, LUA_NAME)
     # Lua's [[...]] literals take the paths verbatim; ASCII keeps Resolve's
-    # parser happy regardless of its locale.
-    with open(dest, "w", encoding="ascii", errors="replace", newline="\r\n") as fh:
+    # parser happy regardless of its locale. Line endings follow the platform:
+    # CRLF is what Windows Resolve has always been given, and LF is correct
+    # everywhere else.
+    newline = "\r\n" if WINDOWS else "\n"
+    with open(dest, "w", encoding="ascii", errors="replace", newline=newline) as fh:
         fh.write(text)
     print(f"+ menu item -> {dest}")
     print(f"    paths baked in -> {target_dir}")
     return dest
 
 
-def verify() -> bool:
+def verify(dev: bool = False) -> bool:
     """Re-read from disk and report exactly what is there, so a run of this
     script is self-proving rather than something you have to take on trust."""
     target_dir = app_dir()
     expected = [
-        os.path.join(target_dir, EXE_NAME),
-        os.path.join(target_dir, SHIM_NAME),
-        os.path.join(SCRIPTS_DIR, LUA_NAME),
+        (os.path.join(target_dir, SHIM_NAME), False),
+        (os.path.join(SCRIPTS_DIR, LUA_NAME), False),
     ]
+    # A --dev install deliberately has no built app: the shim runs the source
+    # directly. Demanding one here would fail every dev install.
+    if not dev:
+        expected.insert(0, (os.path.join(target_dir, EXE_NAME), APP_IS_BUNDLE))
     print("\n--- verification (read back from disk) ---")
-    print(f"LOCALAPPDATA = {os.environ.get('LOCALAPPDATA')}")
-    print(f"APPDATA      = {os.environ.get('APPDATA')}")
+    if WINDOWS:
+        print(f"LOCALAPPDATA = {os.environ.get('LOCALAPPDATA')}")
+        print(f"APPDATA      = {os.environ.get('APPDATA')}")
+    else:
+        print(f"app dir      = {target_dir}")
+        print(f"scripts dir  = {SCRIPTS_DIR}")
     ok = True
-    for path in expected:
-        if os.path.isfile(path):
+    for path, is_dir in expected:
+        if is_dir:
+            # A bundle's size is the sum of its tree, which is what a user would
+            # expect to see reported for "the app".
+            if os.path.isdir(path):
+                size = sum(os.path.getsize(os.path.join(root, name))
+                           for root, _, names in os.walk(path)
+                           for name in names
+                           if not os.path.islink(os.path.join(root, name)))
+                print(f"  OK      {size:>10,} bytes  {path}")
+                continue
+        elif os.path.isfile(path):
             print(f"  OK      {os.path.getsize(path):>10,} bytes  {path}")
-        else:
-            print(f"  MISSING                       {path}")
-            ok = False
+            continue
+        print(f"  MISSING                       {path}")
+        ok = False
     return ok
 
 
@@ -308,15 +398,21 @@ def main() -> int:
             return 1
     else:
         if not install_exe():
-            print(f"  (no dist\\{EXE_NAME} — run `py -3.13 build.py` first, or use --dev)")
+            build_cmd = "py -3.13 build.py" if WINDOWS else "python3.13 build.py"
+            sep = "\\" if WINDOWS else "/"
+            print(f"  (no dist{sep}{EXE_NAME} — run `{build_cmd}` first, or use --dev)")
 
     launcher = install_launcher()
     if not launcher:
         return 1
 
-    if not verify():
-        print("\n! Something is missing above. If a file failed to write, the most likely\n"
-              "  causes are antivirus quarantine or a permissions problem on that folder.")
+    if not verify(dev):
+        if WINDOWS:
+            print("\n! Something is missing above. If a file failed to write, the most likely\n"
+                  "  causes are antivirus quarantine or a permissions problem on that folder.")
+        else:
+            print("\n! Something is missing above. The most likely cause is a permissions\n"
+                  "  problem on that folder.")
         return 1
 
     print(f"\nDone. In Resolve:  Workspace -> Scripts -> Utility -> {APP}")
@@ -325,10 +421,31 @@ def main() -> int:
     print("    so until you restart it will keep running the previous version.")
     if dev:
         print("\nDev mode: the menu entry now runs your source copy directly —")
-        print("    no exe and no environment variables involved. Re-run this after")
-        print("    moving the project, since the path is baked into the shim.")
+        print("    no bundle and no environment variables involved. Re-run this")
+        print("    after moving the project, since the path is baked into the shim.")
+    if MACOS:
+        _report_ffmpeg()
     print("If the menu entry doesn't appear, restart Resolve.")
     return 0
+
+
+def _report_ffmpeg() -> None:
+    """Tell the user about ffmpeg while they are still at the terminal.
+
+    macOS has no trustworthy ffmpeg binary to download on the user's behalf (see
+    backend/deps.py), so it is an install step. Saying so here — rather than
+    letting the app discover it on first launch — means the one manual step is
+    surfaced next to the others instead of as a surprise later.
+    """
+    if shutil.which("ffmpeg") or os.path.isfile("/opt/homebrew/bin/ffmpeg") \
+            or os.path.isfile("/usr/local/bin/ffmpeg"):
+        return
+    print("\n--- one more thing: ffmpeg ---")
+    print("  ffmpeg isn't installed, and YEETingus doesn't download it on macOS:")
+    print("  there is no build for Apple Silicon whose origin we can vouch for.")
+    print("  Install it yourself with:\n")
+    print("      brew install ffmpeg\n")
+    print("  (No Homebrew? Get it from https://brew.sh first.)")
 
 
 def _run() -> int:

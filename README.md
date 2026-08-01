@@ -9,8 +9,8 @@
 Paste a link, set an in and out point, hit one button. No browser, no downloads folder
 shuffling, no manual importing.
 
-![version](https://img.shields.io/badge/version-1.0.0.1-edff00?style=flat-square&labelColor=1a1a1a)
-![platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-1.1.0-edff00?style=flat-square&labelColor=1a1a1a)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![python](https://img.shields.io/badge/build%20with-Python%203.6–3.13-3776ab?style=flat-square&labelColor=1a1a1a)
 ![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
@@ -25,7 +25,9 @@ shuffling, no manual importing.
 - [Features](#-features)
 - [Requirements](#-requirements)
 - [Installation](#-installation)
+- [ffmpeg on macOS](#-ffmpeg-on-macos)
 - [Antivirus false positives](#-antivirus-false-positives)
+- [Gatekeeper on macOS](#-gatekeeper-on-macos)
 - [How to use it](#-how-to-use-it)
 - [Settings](#-settings)
 - [Where clips are saved](#-where-clips-are-saved)
@@ -125,8 +127,9 @@ Built for DaVinci Resolve, where no equivalent tool existed.
   while hidden, and opens itself automatically if something fails
 - **🖥️ Scales with your display** — reads the system DPI, so the whole UI stays
   proportionate on 1080p and 4K alike rather than shrinking to a postage stamp
-- **🌒 Dark title bar** — the native Windows title bar is themed to match, instead of
-  a white strip above a near-black window
+- **🌒 Dark title bar** — on Windows the native title bar is themed to match,
+  instead of a white strip above a near-black window (macOS offers no equivalent
+  API, so there it follows the system appearance)
 - **🔄 Self-updating downloader** — an **Update yt-dlp** button, because YouTube
   changes things and breakage is a matter of when, not if
 - **📦 Zero-dependency setup** — yt-dlp and ffmpeg are fetched automatically on first
@@ -138,11 +141,12 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 
 | | |
 |---|---|
-| 🖥️ **OS** | Windows |
+| 🖥️ **OS** | Windows, or macOS on **Apple Silicon** |
 | 🎬 **DaVinci Resolve** | Studio, running, with a project and timeline open |
 | 🔓 **Scripting enabled** | `Preferences → System → General → External scripting using` → **Local** |
 | 🐍 **Python** | **Only to build it** — 3.6–3.13 (see [note](#the-python-version-constraint)) |
-| 📥 **yt-dlp + ffmpeg** | Fetched automatically on first run |
+| 📥 **yt-dlp** | Fetched automatically on first run |
+| 🎞️ **ffmpeg** | Automatic on Windows · **`brew install ffmpeg`** on macOS ([why](#-ffmpeg-on-macos)) |
 
 > [!IMPORTANT]
 > Enabling external scripting is not optional — without it, Resolve won't accept
@@ -159,12 +163,25 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 
 There's no installer yet — you build it once, then install it.
 
+**Windows**
+
 ```bash
 git clone https://github.com/hajdawery/yeetingus.git
 cd yeetingus
 
 py -3.13 build.py      # creates dist\YEETingus.exe  (~11 MB)
 py -3.13 install.py    # installs it + adds the Resolve menu entry
+```
+
+**macOS**
+
+```bash
+git clone https://github.com/hajdawery/yeetingus.git
+cd yeetingus
+
+brew install ffmpeg      # see "ffmpeg on macOS" below — this one is on you
+python3.13 build.py      # creates dist/YEETingus.app
+python3.13 install.py    # installs it + adds the Resolve menu entry
 ```
 
 Then **restart DaVinci Resolve**.
@@ -188,12 +205,22 @@ loudly if anything is missing rather than claiming success.
 <summary><b>Running from source instead</b></summary>
 
 ```bash
-py -3.13 backend\yeet_app.py          # just run it
+py -3.13 backend\yeet_app.py          # Windows: just run it
 py -3.13 install.py --dev             # or point the Resolve menu entry at your source copy
+
+python3.13 backend/yeet_app.py        # macOS: just run it
+python3.13 install.py --dev           # or point the Resolve menu entry at your source copy
 ```
 
 `--dev` bakes your source path into the launcher, so the menu entry runs your working
-copy with no exe involved. Re-run it if you move the project.
+copy with no built app involved. Re-run it if you move the project.
+
+> [!NOTE]
+> **macOS, running from source:** the python.org builds ship no CA bundle, so
+> downloads fail with `CERTIFICATE_VERIFY_FAILED` until you run
+> `/Applications/Python 3.13/Install Certificates.command`. YEETingus falls back
+> to the system trust store at `/etc/ssl/cert.pem` if you haven't, so this
+> usually just works — but that's the fix if it doesn't.
 
 </details>
 
@@ -228,6 +255,43 @@ to run on an unsupported version rather than producing a broken exe, and
 `resolve_bridge.MAX_PY` is the single constant to bump once a newer Python works.
 
 </details>
+
+---
+
+## 🎞️ ffmpeg on macOS
+
+On Windows, YEETingus downloads ffmpeg for you on first run. **On macOS it
+doesn't, and that's deliberate.**
+
+```bash
+brew install ffmpeg
+```
+
+**Why the difference.** Windows has an obvious, trustworthy source: yt-dlp
+maintains [FFmpeg-Builds](https://github.com/yt-dlp/FFmpeg-Builds), the exact
+builds yt-dlp is tested against. macOS has no equivalent:
+
+| Source | Problem |
+|---|---|
+| **evermeet.cx** — the only macOS build ffmpeg.org links | *"I do not plan to provide native ffmpeg binaries for Apple Silicon ARM."* Intel only. |
+| **yt-dlp's FFmpeg-Builds** | Windows and Linux artifacts only; no macOS build exists. |
+| **osxexperts.net** | Has arm64, but the site labels its downloads *"for educational purposes only."* |
+| **eugeneware/ffmpeg-static** and friends | Look like independent builders. They aren't — their CI runs on Linux and re-downloads `osxexperts.net/ffmpeg6arm.zip`. |
+
+Every Apple Silicon binary on offer traces back to one personal website. A tool
+that silently downloads an executable and then runs it on your machine owes you
+a source it can actually stand behind, and on macOS there isn't one — so
+YEETingus asks instead of guessing. Homebrew builds in public CI, ships
+checksummed bottles, and you install it yourself.
+
+> [!NOTE]
+> Already have an ffmpeg you trust? Point `YEET_FFMPEG` at it and YEETingus will
+> use that instead — no Homebrew involved. `YEET_FFPROBE` and `YEET_YTDLP` work
+> the same way.
+
+This is also what keeps the licensing simple: ffmpeg's GPL terms attach to
+**distribution**, and this project distributes no part of it. See
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ---
 
@@ -276,6 +340,40 @@ pre-compiled binary from anyone.
 
 ---
 
+## 🍎 Gatekeeper on macOS
+
+The macOS counterpart to the Defender problem above, with the same root cause —
+an unsigned binary with no reputation — but a stricter enforcement model.
+
+**Building it yourself, which is the documented path, avoids this entirely.**
+`build.py` ad-hoc signs the bundle, and an app you compiled locally was never
+quarantined, so it just runs.
+
+It only bites if you download a **pre-built** `.app` from someone else. macOS
+tags anything a browser downloaded with `com.apple.quarantine`, and an unsigned,
+un-notarised app then refuses to open — on recent macOS with no obvious way past
+it in the dialog. If that happens:
+
+| | |
+|---|---|
+| **Build from source instead** | `python3.13 build.py` — the recommended fix, and the same advice as for Defender |
+| **Right-click → Open** | The one path that offers an "Open anyway" button; double-clicking does not |
+| **System Settings → Privacy & Security** | Shows an "Open anyway" button for a short window after a blocked launch |
+
+The real fix is an Apple Developer ID certificate plus notarisation, which is on
+the roadmap alongside Windows code signing. Until then, `build.py` deliberately
+**does not** produce a standalone installer on macOS by default — an unsigned
+installer binary is precisely what Gatekeeper blocks, so shipping one would add a
+scary warning to the step meant to reassure you. Pass `--installer` if you want
+it anyway.
+
+> [!NOTE]
+> Downloaded tools are unaffected. `com.apple.quarantine` is applied by Launch
+> Services on behalf of browsers, not by a plain HTTPS download, so the yt-dlp
+> binary YEETingus fetches runs without any `xattr` surgery.
+
+---
+
 ## 🚀 How to use it
 
 1. In Resolve, open a project and a timeline
@@ -301,8 +399,13 @@ Resolve closed.
 
 ## ⚙️ Settings
 
-Stored in `%LOCALAPPDATA%\YEETingus\settings.json`, written atomically and preserved
-across reinstalls.
+Stored alongside the app's own data, written atomically and preserved across
+reinstalls:
+
+| | |
+|---|---|
+| **Windows** | `%LOCALAPPDATA%\YEETingus\settings.json` |
+| **macOS** | `~/Library/Application Support/YEETingus/settings.json` |
 
 - 📁 **Clip storage folder** — with a Browse picker. Defaults to your **Videos**
   folder (`Movies` on macOS), honouring a relocated one rather than assuming
@@ -320,7 +423,8 @@ across reinstalls.
 ## 📁 Where clips are saved
 
 ```
-%USERPROFILE%\Videos\YEETingus\
+%USERPROFILE%\Videos\YEETingus\        (Windows)
+~/Movies/YEETingus/                    (macOS)
 └── dQw4w9WgXcQ - Rick Astley - Never Gonna Give You Up (4K Remaster) - Rick Astley\
     ├── dQw4w9WgXcQ-RickAstley-c001.mp4
     └── dQw4w9WgXcQ-RickAstley-c002.mp4
@@ -402,7 +506,7 @@ One standalone app — no server, no port, nothing listening.
         │
         │  YEETingus.lua spawns the app (never blocks Resolve)
         ▼
-  YEETingus.exe  ── subprocess ──▶  yt-dlp + ffmpeg   (fetch just the section)
+  YEETingus.exe / .app  ── subprocess ──▶  yt-dlp + ffmpeg  (fetch the section)
         │
         └── Resolve's official external Python scripting API
                     │
@@ -419,12 +523,19 @@ Documented in `resolve/YEETingus.lua.in`, because each one cost real debugging t
    `%LOCALAPPDATA%`, so `install.py` bakes absolute paths into the launcher. When
    `os.getenv` returned nil, every path broke and clicking the menu item did nothing
    at all — not even a log line.
-2. **Launch via LuaJIT FFI `ShellExecuteA`**, not `os.execute`. The latter is
-   unreliable inside Resolve's Lua host, though it works fine standalone — which
-   makes it especially misleading to test.
-3. **Launch the `.bat`, not the `.exe`.** Resolve exports `PYTHONHOME` for its own
-   scripting, and a PyInstaller exe that inherits it segfaults instantly.
-   `launch_yeetingus.bat` clears those variables first.
+2. **Launch via LuaJIT FFI `ShellExecuteA`** on Windows, not `os.execute`. The
+   latter is unreliable inside Resolve's Lua host, though it works fine
+   standalone — which makes it especially misleading to test.
+3. **Launch the shim, not the app.** Resolve exports `PYTHONHOME` for its own
+   scripting, and a PyInstaller build that inherits it segfaults instantly.
+   `launch_yeetingus.bat` / `.sh` clears those variables first.
+
+And one more that only exists on macOS:
+
+4. **Never `open` the `.sh`.** Launch Services resolves a shell script by file
+   association and hands it to a text editor — the script *opens in a window*
+   instead of running, which looks exactly like a silent failure. The launcher
+   invokes `/bin/sh` by name so no association lookup ever happens.
 
 </details>
 
@@ -440,12 +551,15 @@ Documented in `resolve/YEETingus.lua.in`, because each one cost real debugging t
 | `backend/config.py` | Persisted settings |
 | `backend/resolve_bridge.py` | Resolve import and timeline insert |
 | `backend/version.py` | Name, version, authorship |
-| `resolve/YEETingus.lua.in` | Scripts-menu launcher template |
-| `resolve/launch_yeetingus.bat` | Clears `PYTHONHOME` before starting the exe |
+| `backend/platform_paths.py` | Every path that differs by OS, in one place |
+| `resolve/YEETingus.lua.in` | Scripts-menu launcher template (all platforms) |
+| `resolve/launch_yeetingus.bat` | Windows: clears `PYTHONHOME` before starting the app |
+| `resolve/launch_yeetingus.sh` | macOS/Linux: the same, plus Homebrew on `PATH` |
 | `build.py` / `install.py` | Freeze / install |
 
 `resolve_bridge.py` is the only Resolve-specific module, so porting to another NLE
-means writing one new adapter rather than restructuring the app.
+means writing one new adapter rather than restructuring the app. Likewise
+`platform_paths.py` is where a new OS gets taught about itself.
 
 </details>
 
@@ -457,12 +571,14 @@ means writing one new adapter rather than restructuring the app.
 <summary><b>The menu entry does nothing when clicked</b></summary>
 
 1. **Restart Resolve.** It caches the launcher when building the Scripts menu.
-2. Check `%LOCALAPPDATA%\YEETingus\launcher.log`:
+2. Check `launcher.log` — `%LOCALAPPDATA%\YEETingus\` on Windows,
+   `~/Library/Application Support/YEETingus/` on macOS:
    - **New lines appear** → the launcher ran; the log names which launch mechanism
      failed and why
    - **No new lines** → Resolve isn't executing the file at all, which points at the
      script's location rather than its contents
-3. Re-run `py -3.13 install.py` and read its verification block.
+3. Re-run the installer (`py -3.13 install.py` / `python3.13 install.py`) and read
+   its verification block.
 
 </details>
 
@@ -519,8 +635,16 @@ Media Pool → **Generate Optimized Media**.
 
 - ⏱️ **Drop-frame timecode** — playhead placement uses non-drop-frame maths, so
   29.97/59.94 timelines may be off by a frame or two
-- 🪟 **Windows only** — the launcher shim, process-tree kill and ffmpeg build are
-  Windows-specific
+- 🐧 **No Linux build** — the code paths exist and nothing in them is
+  Windows-or-macOS-only, but it is untested and unsupported
+- 💻 **Intel Macs are not supported** — release builds are Apple Silicon only.
+  Nothing in the code precludes Intel, and `build.py --universal` will produce a
+  universal2 bundle, but it isn't tested or shipped
+- 🍎 **macOS: ffmpeg is a manual step** — see
+  [ffmpeg on macOS](#-ffmpeg-on-macos)
+- 🍎 **macOS: light title bar in Light Mode** — the Windows build tints its title
+  bar dark to match the window; macOS has no equivalent API, so in Light Mode you
+  get a light title bar above a near-black window
 - 🎞️ **No transcode on ingest** — deliberate; see
   [Codecs and smooth playback](#-codecs-and-smooth-playback)
 - 🔄 **No auto-update yet** — the app doesn't check for new versions of itself
@@ -564,8 +688,10 @@ whose link you pasted.
 ### Not affiliated
 
 DaVinci Resolve and Blackmagic Design are trademarks of Blackmagic Design Pty. Ltd.
-YouTube is a trademark of Google LLC; Twitch of Twitch Interactive, Inc. This is an
-independent, unofficial project, **not affiliated with or endorsed by** any of them.
+YouTube is a trademark of Google LLC; Twitch of Twitch Interactive, Inc. macOS and
+Apple Silicon are trademarks of Apple Inc.; Windows of Microsoft Corporation. This
+is an independent, unofficial project, **not affiliated with or endorsed by** any
+of them.
 It uses Blackmagic Design's documented, officially supported scripting API, and
 bundles no part of Resolve.
 
@@ -599,7 +725,9 @@ What that does and doesn't mean:
 - **It was tested against a real DaVinci Resolve install** throughout. The awkward
   parts — the Resolve launcher, DPI scaling, filename sanitising, the download
   pipeline — were worked out by running them and reading the failures, not by
-  assuming they'd work.
+  assuming they'd work. The macOS port was done the same way: the DPI baseline,
+  the certificate store and the process-group kill were all found by running
+  them on a Mac and watching them break.
 - **The whole source is here.** Nothing is obfuscated or minified. Judge it by
   reading it rather than by how it was written.
 - **Bugs are mine.** If something breaks, open an issue — "the AI wrote it" is not
