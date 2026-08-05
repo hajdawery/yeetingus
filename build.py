@@ -348,17 +348,18 @@ def main() -> int:
 
     install_cmd = "py -3.13 install.py" if WINDOWS else "python3.13 install.py"
 
-    # The standalone installer is the default on Windows, where it saves users
-    # from needing Python. On macOS it is opt-in: an unsigned, un-notarised
-    # installer binary is exactly what Gatekeeper blocks on download, so it would
-    # add a scary warning to the one step that is supposed to reassure. Until
-    # there's a Developer ID to sign with, `python3 install.py` is the better
-    # macOS story — and build.py should not pretend otherwise.
-    skip = "--no-installer" in sys.argv or (MACOS and "--installer" not in sys.argv)
-    if skip:
+    if "--no-installer" in sys.argv:
         print(f"\nNext:  {install_cmd}    (copies it into place + adds the menu entry)")
-        if MACOS and "--no-installer" not in sys.argv:
-            print("       (pass --installer to build a standalone installer too)")
+        return 0
+
+    # macOS gets a staged zip rather than a frozen installer — see
+    # build_macos_release for why one cannot be built at all.
+    if MACOS:
+        asset = build_macos_release(app)
+        if not asset:
+            return 1
+        print(f"\nRelease asset:  {asset}")
+        print(f"Next:  {install_cmd}    (or unzip the asset and run install.py there)")
         return 0
 
     rc = build_installer(app, icon)
@@ -370,6 +371,131 @@ def main() -> int:
     print(f"\nRelease asset:  dist{sep}{installer}")
     print(f"Next:  run it to install, or `{install_cmd}` from here.")
     return 0
+
+
+def build_macos_release(app: str) -> str | None:
+    """Stage and zip the macOS release asset. Returns its path.
+
+    There is no macOS counterpart to the Windows one-file installer, for two
+    independent reasons:
+
+    * It cannot be built. Freezing install.py with the .app inside it fails —
+      PyInstaller cannot nest a signed Python.framework inside its own onefile
+      archive, and stops with "bundle format unrecognized, invalid, or
+      unsuitable".
+    * It would be blocked anyway. An unsigned, un-notarised installer binary is
+      exactly what Gatekeeper refuses on download.
+
+    Shipping the bare .app instead is worse than useless: it never creates the
+    Resolve menu entry, so the app cannot be launched from Resolve — which is
+    the entire point of installing it.
+
+    So the asset is the built bundle staged beside install.py and the modules it
+    imports, zipped. The user unzips and runs `python3 install.py`. That needs
+    nothing installed: macOS ships Python 3.9, and install.py deliberately
+    imports no tkinter and nothing newer than that.
+
+    ditto rather than zip, so the bundle's signature and extended attributes
+    survive the round trip.
+    """
+    print("\n--- macOS release asset ---")
+    stage_root = os.path.join(HERE, "build", "macos-release")
+    name = release_asset_name()
+    stage = os.path.join(stage_root, name)
+    shutil.rmtree(stage_root, ignore_errors=True)
+
+    # Mirrors the repo layout, because install.py resolves its resources
+    # relative to itself when it isn't frozen.
+    payload = [
+        (app, os.path.join(stage, "dist", os.path.basename(app))),
+        (os.path.join(HERE, "resolve", f"{NAME}.lua.in"),
+         os.path.join(stage, "resolve", f"{NAME}.lua.in")),
+        (os.path.join(HERE, "resolve", f"launch_{NAME.lower()}.sh"),
+         os.path.join(stage, "resolve", f"launch_{NAME.lower()}.sh")),
+        (os.path.join(HERE, "backend", "version.py"),
+         os.path.join(stage, "backend", "version.py")),
+        (os.path.join(HERE, "backend", "platform_paths.py"),
+         os.path.join(stage, "backend", "platform_paths.py")),
+        (os.path.join(HERE, "install.py"), os.path.join(stage, "install.py")),
+    ]
+    for src, _ in payload:
+        if not os.path.exists(src):
+            print(f"ERROR: missing {src}")
+            return None
+
+    for src, dst in payload:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.isdir(src):
+            # ditto, not copytree: preserves the code signature.
+            subprocess.run(["ditto", src, dst], check=True)
+        else:
+            shutil.copy2(src, dst)
+
+    readme = os.path.join(stage, "READ ME FIRST.txt")
+    with open(readme, "w", encoding="utf-8") as fh:
+        fh.write(_macos_release_readme())
+
+    out = os.path.join(HERE, "dist", f"{name}.zip")
+    if os.path.exists(out):
+        os.remove(out)
+    subprocess.run(["ditto", "-c", "-k", "--keepParent", stage, out], check=True)
+
+    print(f"Built {out}  ({os.path.getsize(out) / 1048576:.1f} MB)")
+    return out
+
+
+def _macos_release_readme() -> str:
+    """The note that ships inside the macOS zip.
+
+    Plain text, because it is read in Finder's Quick Look or TextEdit before the
+    user has any reason to trust us enough to open anything else.
+    """
+    import version as v
+
+    return f"""{NAME} {v.__version__} — macOS (Apple Silicon)
+
+INSTALL
+
+  1. Open Terminal and cd into this folder, then run:
+
+         python3 install.py
+
+     macOS already has the Python this needs; nothing to install.
+
+  2. Restart DaVinci Resolve. It caches its Scripts menu at launch, so until
+     you restart it will not show the entry.
+
+  3. Find it under:  Workspace -> Scripts -> Utility -> {NAME}
+
+  Do not just copy YEETingus.app somewhere and run it. The installer also
+  writes the Resolve menu entry and the launcher shim, and without those
+  Resolve has no way to start it.
+
+
+GATEKEEPER
+
+  This build is ad-hoc signed but NOT notarised, so macOS will refuse to open
+  it on the first try. Right-click YEETingus.app and choose Open — that dialog
+  has an Open button the one from double-clicking does not. You only do this
+  once.
+
+  If you would rather not click through that, build it yourself instead:
+  https://github.com/hajdawery/yeetingus
+
+
+FFMPEG
+
+  {NAME} does not download ffmpeg on macOS, because no Apple Silicon build
+  exists whose origin can be vouched for. Install it yourself:
+
+      brew install ffmpeg
+
+  yt-dlp and the JavaScript runtime are fetched automatically on first run —
+  both publish official macOS builds.
+
+
+  {v.COPYRIGHT}  ·  {v.AUTHOR_URL}
+"""
 
 
 def build_installer(app_exe: str, icon: str) -> int:
