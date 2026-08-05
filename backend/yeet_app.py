@@ -242,6 +242,13 @@ class YeetApp:
         self.ytdlp_cmd: list[str] | None = None
         self.ffmpeg_path: str | None = None
         self.ytdlp_version: str | None = None
+        # JavaScript runtime for yt-dlp's YouTube challenge solver, and the
+        # yt-dlp arguments that point at it. Empty when the runtime is missing
+        # or this yt-dlp predates the flags — downloads still go ahead, they
+        # just lose the formats that are behind a challenge.
+        self.deno_path: str | None = None
+        self.deno_version: str | None = None
+        self.js_args: list[str] = []
         # Cancellation: the event is checked between phases and inside the
         # download loop; active_proc lets us kill yt-dlp (and its ffmpeg child)
         # mid-flight rather than waiting for it to finish.
@@ -255,8 +262,10 @@ class YeetApp:
         self.update_btn: T.RoundButton | None = None
         self.ytdlp_info_var = tk.StringVar(value="checking…")
         self.ffmpeg_info_var = tk.StringVar(value="checking…")
+        self.js_info_var = tk.StringVar(value="checking…")
         # Settings-window buttons; None whenever that window isn't open.
         self.ffmpeg_btn = None
+        self.js_btn = None
 
         root.title(APP_NAME)
         root.configure(bg=T.BG)
@@ -678,6 +687,102 @@ class YeetApp:
             self.log(f"ERROR: {e}")
             self._enable_ffmpeg_btn(True)
 
+    # ---- JavaScript runtime ------------------------------------------------ #
+
+    def _js_info_text(self) -> str:
+        """Reads the cached version rather than probing: Settings builds this on
+        the UI thread, and spawning deno there would stall the window opening."""
+        if not self.deno_path:
+            return "not found"
+        return f"deno {self.deno_version or '?'}  —  {self.deno_path}"
+
+    def _set_js_info(self, text: str) -> None:
+        self.root.after(0, lambda: self.js_info_var.set(text))
+
+    def _enable_js_btn(self, enabled: bool) -> None:
+        """Safe even if the Settings window has since been closed."""
+        def apply() -> None:
+            btn = self.js_btn
+            if btn is not None and btn.winfo_exists():
+                btn.set_enabled(enabled)
+        self.root.after(0, apply)
+
+    def on_install_js(self) -> None:
+        if self.busy:
+            return
+        threading.Thread(target=self._install_js, daemon=True).start()
+
+    def _install_js(self) -> None:
+        """Fetch Deno on demand, from Settings, and adopt it without a restart."""
+        self._enable_js_btn(False)
+        self.reveal_log()   # it's a ~40 MB download; show that something is happening
+        if self._setup_js_runtime():
+            self.log("JavaScript runtime ready — no restart needed.")
+        else:
+            self._enable_js_btn(True)
+
+    def _ytdlp_help(self) -> str:
+        """yt-dlp's --help text, for checking whether a flag exists.
+
+        Probed rather than inferred from the version string: the EJS flags
+        arrived in a particular release, but yt-dlp can also come from a distro
+        package or a pip install whose version doesn't map cleanly onto one.
+        Asking it what it supports can't be wrong.
+        """
+        try:
+            proc = subprocess.run([*(self.ytdlp_cmd or []), "--help"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, timeout=60, **_spawn_kwargs())
+            return proc.stdout or ""
+        except Exception:  # noqa: BLE001 — treat unreadable help as "no flags"
+            return ""
+
+    def _setup_js_runtime(self) -> bool:
+        """Find or fetch Deno and build the yt-dlp arguments that point at it.
+
+        YouTube serves its formats behind a JavaScript challenge; yt-dlp solves
+        it by running solver scripts in an external runtime. Without one, some
+        videos come back missing formats and others don't download at all. See
+        https://github.com/yt-dlp/yt-dlp/wiki/EJS
+
+        Never fatal — a download without a runtime is degraded, not impossible,
+        so a failure here leaves the app usable and says what to do about it.
+        Returns whether a runtime is now in use.
+        """
+        self.js_args = []
+        help_text = self._ytdlp_help()
+        if "--js-runtimes" not in help_text:
+            self.log("NOTE: this yt-dlp predates YouTube's JavaScript challenge "
+                     "support.")
+            self.log("      Press 'Update yt-dlp' in Settings if downloads start "
+                     "failing.")
+            self._set_js_info("unused — yt-dlp too old")
+            return False
+
+        try:
+            self.deno_path = deps.ensure_deno(self.log)
+        except Exception as e:  # noqa: BLE001 — message is written for the log
+            self.log(f"WARNING: no JavaScript runtime — {e}")
+            self.log("  YouTube may refuse some formats until one is available.")
+            self.log("  Retry from Settings, or install Deno yourself: "
+                     "https://deno.com")
+            self._set_js_info("not found")
+            return False
+
+        self.deno_version = deps.deno_version(self.deno_path)
+        args = ["--js-runtimes", f"deno:{self.deno_path}"]
+        if "--remote-components" in help_text:
+            # Last-resort source for the solver scripts, used only when the
+            # copies bundled with yt-dlp are missing or too old for the challenge
+            # YouTube is currently serving — which is exactly the case where a
+            # video would otherwise refuse to download. yt-dlp checks what it
+            # fetches against its own hash allowlist before running it, and Deno
+            # runs it with no filesystem or network access.
+            args += ["--remote-components", "ejs:github"]
+        self.js_args = args
+        self._set_js_info(self._js_info_text())
+        return True
+
     def _update_ytdlp(self) -> None:
         self._enable_update_btn(False)
         try:
@@ -717,8 +822,9 @@ class YeetApp:
         win.title(f"{APP_NAME} Settings")
         win.configure(bg=T.BG)
         apply_icon(win)
-        win.geometry(f"{T.px(640)}x{self._fit_height(T.px(810))}")
-        win.minsize(T.px(470), T.px(780))
+        # Provisional; re-set from the packed content at the end of this method.
+        win.geometry(f"{T.px(640)}x{self._fit_height(T.px(870))}")
+        win.minsize(T.px(470), T.px(700))
         win.transient(self.root)
         win.grab_set()
         # After transient()/grab_set(), not before: Tk recreates the window frame
@@ -784,8 +890,14 @@ class YeetApp:
         # Live vars so an update performed from this window refreshes in place.
         self.ytdlp_info_var.set(self._ytdlp_info_text())
         self.ffmpeg_info_var.set(self.ffmpeg_path or "not found")
+        # Only when there's a runtime to describe: otherwise the var already
+        # holds the reason from startup ("not found" / "yt-dlp too old"), which
+        # is more use than recomputing "not found" here.
+        if self.deno_path:
+            self.js_info_var.set(self._js_info_text())
         for label, var in (("yt-dlp", self.ytdlp_info_var),
-                           ("ffmpeg", self.ffmpeg_info_var)):
+                           ("ffmpeg", self.ffmpeg_info_var),
+                           ("JS", self.js_info_var)):
             line = tk.Frame(ib, bg=T.CARD)
             line.pack(fill="x", pady=2)
             tk.Label(line, text=f"{label}:", bg=T.CARD, fg=T.MUTED,
@@ -813,6 +925,18 @@ class YeetApp:
         if self.busy:
             self.update_btn.set_enabled(False)
 
+        # Only while it's actually missing: startup fetches the runtime by
+        # itself, so this button is for the run where that failed — no network
+        # on a first launch, say — rather than a normal step.
+        self.js_btn = None
+        if not self.deno_path:
+            self.js_btn = T.ghost_button(
+                ib, "Install JavaScript runtime (Deno)", self.on_install_js,
+                height=40, font=(T.FONT, 10))
+            self.js_btn.pack(fill="x", pady=(T.px(8), 0))
+            if self.busy:
+                self.js_btn.set_enabled(False)
+
         # macOS only, and only while it's actually missing: ffmpeg is installed
         # by Homebrew rather than downloaded (see deps.py), so this is the one
         # dependency the app can't just resolve on its own. Offering the command
@@ -833,6 +957,7 @@ class YeetApp:
             if e.widget is win:
                 self.update_btn = None
                 self.ffmpeg_btn = None
+                self.js_btn = None
         win.bind("<Destroy>", _forget)
 
         # About / credit ---------------------------------------------------- #
@@ -887,6 +1012,13 @@ class YeetApp:
         T.ghost_button(buttons, "Cancel", win.destroy, height=48, width=120).pack(
             side="left", padx=(T.px(10), 0))
 
+        # Height from the content rather than a constant, now that the card can
+        # grow or shrink by a whole button depending on what's installed. A fixed
+        # figure was already 32px short of the tallest case, which put Save and
+        # Cancel off the bottom edge — the two controls the window exists for.
+        win.update_idletasks()
+        win.geometry(f"{T.px(640)}x{self._fit_height(win.winfo_reqheight())}")
+
     # ---- startup ---------------------------------------------------------- #
 
     def _boot(self) -> None:
@@ -916,8 +1048,12 @@ class YeetApp:
             return
 
         self.ytdlp_version = self._probe_version()
+        # After yt-dlp, because it asks yt-dlp which flags it understands, and
+        # non-fatal by design — see _setup_js_runtime.
+        self._setup_js_runtime()
+        runtime = f" · deno {self.deno_version or '?'}" if self.deno_path else ""
         self.log(f"yt-dlp {self.ytdlp_version or '?'} ready · "
-                 f"ffmpeg {os.path.basename(self.ffmpeg_path or '?')}")
+                 f"ffmpeg {os.path.basename(self.ffmpeg_path or '?')}{runtime}")
         self.root.after(0, lambda: self.ytdlp_info_var.set(self._ytdlp_info_text()))
 
         self._check_connection()
@@ -1203,7 +1339,8 @@ class YeetApp:
         under a descriptive folder. Best effort — a failure just means a plainer
         folder name, not a failed download."""
         self.log("Reading video info…")
-        cmd = [*(self.ytdlp_cmd or []), "--dump-single-json", "--no-warnings",
+        cmd = [*(self.ytdlp_cmd or []), *self.js_args,
+               "--dump-single-json", "--no-warnings",
                "--skip-download", "--no-playlist", url]
         try:
             # Popen (not run) so STOP can kill it mid-lookup.
@@ -1470,6 +1607,7 @@ class YeetApp:
 
         cmd = [
             *(self.ytdlp_cmd or []),
+            *self.js_args,
             url,
             "-f", format_selector(max_height),
             "-S", FORMAT_SORT,
@@ -1482,8 +1620,8 @@ class YeetApp:
             # Section mode: fetch only the requested range, re-encoding around the
             # cut points so the trim is frame-accurate. Omitted entirely for a
             # whole-video pull, where there's nothing to cut.
-            cmd[2:2] = ["--download-sections", f"*{start}-{end}",
-                        "--force-keyframes-at-cuts"]
+            cmd += ["--download-sections", f"*{start}-{end}",
+                    "--force-keyframes-at-cuts"]
         if self.ffmpeg_path:
             cmd += ["--ffmpeg-location", os.path.dirname(self.ffmpeg_path)]
 
@@ -1500,6 +1638,7 @@ class YeetApp:
         self.active_proc = proc
         assert proc.stdout is not None
         saw_403 = False
+        saw_no_js = False
         phase = "prepare"
         for line in proc.stdout:
             if self._cancelled():
@@ -1511,6 +1650,8 @@ class YeetApp:
             low = line.lower()
             if "403" in line and "forbidden" in low:
                 saw_403 = True
+            if "javascript runtime" in low:
+                saw_no_js = True
 
             # yt-dlp reports a percentage per stream; map it into the download
             # band so the bar tracks real progress instead of guessing.
@@ -1538,6 +1679,15 @@ class YeetApp:
 
         if proc.returncode != 0:
             self.log(f"yt-dlp exited with code {proc.returncode}.")
+            if saw_no_js:
+                # The most likely cause of a YouTube failure now, and the one
+                # with a concrete fix, so it goes first. Deliberately not phrased
+                # as "not installed": yt-dlp prints the same complaint for a
+                # runtime that is present but older than it accepts.
+                self.log("HINT: yt-dlp found no usable JavaScript runtime, so "
+                         "YouTube withheld formats.")
+                self.log("      Check the JS line in Settings — see "
+                         "https://github.com/yt-dlp/yt-dlp/wiki/EJS")
             if saw_403:
                 # A 403 here is YouTube rejecting a specific format URL, not a
                 # missing resolution — the usual cures are a newer yt-dlp or

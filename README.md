@@ -9,7 +9,7 @@
 Paste a link, set an in and out point, hit one button. No browser, no downloads folder
 shuffling, no manual importing.
 
-![version](https://img.shields.io/badge/version-1.1.0-edff00?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-1.2.0-edff00?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![python](https://img.shields.io/badge/build%20with-Python%203.6–3.13-3776ab?style=flat-square&labelColor=1a1a1a)
@@ -26,6 +26,7 @@ shuffling, no manual importing.
 - [Requirements](#-requirements)
 - [Installation](#-installation)
 - [ffmpeg on macOS](#-ffmpeg-on-macos)
+- [The JavaScript runtime](#-the-javascript-runtime)
 - [Antivirus false positives](#-antivirus-false-positives)
 - [Gatekeeper on macOS](#-gatekeeper-on-macos)
 - [How to use it](#-how-to-use-it)
@@ -147,6 +148,7 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 | 🐍 **Python** | **Only to build it** — 3.6–3.13 (see [note](#the-python-version-constraint)) |
 | 📥 **yt-dlp** | Fetched automatically on first run |
 | 🎞️ **ffmpeg** | Automatic on Windows · **`brew install ffmpeg`** on macOS ([why](#-ffmpeg-on-macos)) |
+| 🟢 **JS runtime** | Deno, fetched automatically on first run ([why](#-the-javascript-runtime)) |
 
 > [!IMPORTANT]
 > Enabling external scripting is not optional — without it, Resolve won't accept
@@ -286,12 +288,58 @@ checksummed bottles, and you install it yourself.
 
 > [!NOTE]
 > Already have an ffmpeg you trust? Point `YEET_FFMPEG` at it and YEETingus will
-> use that instead — no Homebrew involved. `YEET_FFPROBE` and `YEET_YTDLP` work
-> the same way.
+> use that instead — no Homebrew involved. `YEET_FFPROBE`, `YEET_YTDLP` and
+> `YEET_DENO` work the same way.
 
 This is also what keeps the licensing simple: ffmpeg's GPL terms attach to
 **distribution**, and this project distributes no part of it. See
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+---
+
+## 🟢 The JavaScript runtime
+
+YouTube now hides its formats behind a **JavaScript challenge**. yt-dlp solves it
+by running solver scripts in a real JS engine — an approach yt-dlp calls
+[EJS](https://github.com/yt-dlp/yt-dlp/wiki/EJS). Without one, some videos come
+back missing formats and others refuse to download at all.
+
+So on first run YEETingus fetches **Deno**, the runtime yt-dlp enables by
+default. It's a **one-time ~40 MB download** (~92 MB on disk) into the same
+folder as yt-dlp:
+
+| | |
+|---|---|
+| **Windows** | `%LOCALAPPDATA%\YEETingus\bin\deno.exe` |
+| **macOS** | `~/Library/Application Support/YEETingus/bin/deno` |
+
+Unlike ffmpeg, this one is downloaded on **every** platform. Deno publishes
+official builds for all of them, straight from its own repository, under the MIT
+licence — so the provenance problem that keeps ffmpeg off that list doesn't
+arise here.
+
+**Already have one?** If Deno is on your `PATH`, or in `~/.deno/bin` where its
+own installer puts it, YEETingus uses that and downloads nothing. `YEET_DENO`
+points it at a specific build.
+
+The one exception is **Deno older than 2.3.0**, which yt-dlp refuses. It reports
+that no runtime could be found rather than naming the version, so YEETingus
+checks first and fetches a current build instead of leaving you with a failure
+that doesn't say why. Your own Deno is left exactly where it is — it just isn't
+the one used.
+
+> [!NOTE]
+> yt-dlp also supports Node, Bun and QuickJS. YEETingus only looks for Deno, to
+> keep one runtime to detect and explain. If you'd rather use another, configure
+> it in [yt-dlp's own config file](https://github.com/yt-dlp/yt-dlp#configuration).
+
+**What actually runs.** The solver scripts ship inside yt-dlp itself. YEETingus
+also passes `--remote-components ejs:github`, which lets yt-dlp fall back to
+fetching them from [its own repository](https://github.com/yt-dlp/ejs) when the
+bundled copies are too old for the challenge YouTube is currently serving —
+which is exactly the case where a video would otherwise fail. yt-dlp checks what
+it downloads against its own hash allowlist before running it, and Deno executes
+it with no filesystem or network access.
 
 ---
 
@@ -413,10 +461,12 @@ reinstalls:
   are entitled to empty — that would take media your timelines reference offline.
 - ⏱️ **Default clip length** — `15s` · `30s` · `60s` · `90s`, applied to the end point
   when the app opens
-- 🧰 **Tools** — the resolved yt-dlp and ffmpeg paths and versions
+- 🧰 **Tools** — the resolved yt-dlp, ffmpeg and JS runtime paths and versions
 - 🩺 **Resolve diagnostics** — the detected scripting library and Python version, in red
   if either is wrong. This is the first thing to check on a new machine.
 - 🔄 **Update yt-dlp** — self-updates the downloader
+- 🟢 **Install JavaScript runtime** — only shown while one is missing; fetches Deno
+  without a restart ([why](#-the-javascript-runtime))
 
 ---
 
@@ -507,6 +557,7 @@ One standalone app — no server, no port, nothing listening.
         │  YEETingus.lua spawns the app (never blocks Resolve)
         ▼
   YEETingus.exe / .app  ── subprocess ──▶  yt-dlp + ffmpeg  (fetch the section)
+        │                                      └── deno  (solve YouTube's JS challenge)
         │
         └── Resolve's official external Python scripting API
                     │
@@ -597,6 +648,25 @@ nothing open", because those need different fixes.
 </details>
 
 <details>
+<summary><b>"No JavaScript runtime" / a video downloads in a browser but not here</b></summary>
+
+YouTube gates its formats behind a JavaScript challenge, and yt-dlp needs a JS
+runtime to solve it — see [The JavaScript runtime](#-the-javascript-runtime).
+
+Open **Settings** and read the `JS:` line:
+
+| It says | What to do |
+|---|---|
+| `deno 2.x — <path>` | A runtime is in use; the problem is something else |
+| `not found` | Press **Install JavaScript runtime (Deno)**. The usual cause is no network on first run |
+| `unused — yt-dlp too old` | Press **Update yt-dlp**, then reopen the app |
+
+If it still fails, check the log for `[jsc:deno] Solving JS challenges` — that line
+appears whenever the runtime is actually doing its job.
+
+</details>
+
+<details>
 <summary><b>Download fails with HTTP 403</b></summary>
 
 Two different causes:
@@ -607,7 +677,8 @@ simply isn't reachable anonymously.
 
 **A stale or rejected format URL.** Not about resolution. Try **Best available**, then
 **Update yt-dlp** in Settings. Extraction breaks periodically as YouTube changes, and
-a newer yt-dlp is the usual cure.
+a newer yt-dlp is the usual cure. Check the `JS:` line in Settings too — a missing
+[JavaScript runtime](#-the-javascript-runtime) produces the same symptom.
 
 If the video plays fine in a browser while logged out, it's the second case.
 

@@ -291,6 +291,36 @@ def install_exe() -> str | None:
     return dest
 
 
+def prune_other_script_copies(keep: str) -> None:
+    """Remove our menu entry from every Scripts folder except the one just written.
+
+    Resolve scans all of its Scripts locations, so a copy left in a second one
+    shows the app twice in the menu — and worse, only the chosen location is
+    updated from then on, so the stale copy keeps launching an older build.
+
+    That happens when the folder that "wins" changes between installs: an
+    elevated run, a machine-wide folder appearing later, or the per-user folder
+    not existing the first time round.
+    """
+    keep_norm = os.path.normcase(os.path.abspath(keep))
+    for folder in pp.scripts_dirs():
+        for name in (LUA_NAME, f"{LEGACY_NAME}.lua"):
+            path = os.path.join(folder, name)
+            if os.path.normcase(os.path.abspath(path)) == keep_norm:
+                continue
+            if not os.path.isfile(path):
+                continue
+            try:
+                os.remove(path)
+                print(f"  removed duplicate menu entry -> {path}")
+            except OSError as e:
+                # Usually the machine-wide folder needing admin rights.
+                print(f"! a second menu entry remains at {path}")
+                print(f"    ({e})")
+                print("    Delete it by hand, or Resolve will list "
+                      f"{APP} twice.")
+
+
 def install_launcher() -> str | None:
     """Render the launcher template with absolute paths baked in.
 
@@ -343,6 +373,7 @@ def install_launcher() -> str | None:
     with open(dest, "w", encoding="ascii", errors="replace", newline=newline) as fh:
         fh.write(text)
     print(f"+ menu item -> {dest}")
+    prune_other_script_copies(dest)
     print(f"    paths baked in -> {target_dir}")
     return dest
 

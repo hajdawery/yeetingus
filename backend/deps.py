@@ -3,7 +3,7 @@ deps.py — locate (and where it is legitimate to, fetch) the external binaries
 YEETingus needs.
 
 Lookup order for each tool:
-  1. env override            (YEET_YTDLP / YEET_FFMPEG / YEET_FFPROBE)
+  1. env override            (YEET_YTDLP / YEET_FFMPEG / YEET_FFPROBE / YEET_DENO)
   2. bundled next to the app (vendor/ inside the PyInstaller bundle)
   3. the app's own bin dir   (first-run downloads land here)
   4. whatever is on PATH
@@ -13,6 +13,14 @@ WHAT GETS DOWNLOADED, AND WHY IT DIFFERS BY PLATFORM
 ----------------------------------------------------
 yt-dlp publishes an official binary for every platform we support, so it is
 fetched automatically everywhere — the user gets the publisher's own artifact.
+
+Deno is the same case, and is fetched the same way. YouTube now serves its
+formats behind a JavaScript challenge, and yt-dlp solves it by running scripts
+in an external JS runtime — see https://github.com/yt-dlp/yt-dlp/wiki/EJS.
+Without one, some videos lose formats or fail outright. Deno is the runtime
+yt-dlp enables by default, publishes signed release builds for every platform we
+support, and is MIT-licensed, so the provenance question that keeps ffmpeg off
+this list does not arise.
 
 ffmpeg does not, and the difference is not cosmetic:
 
@@ -40,6 +48,8 @@ that, which is why neither is done.
 from __future__ import annotations
 
 import os
+import platform
+import re
 import shutil
 import ssl
 import stat
@@ -69,6 +79,43 @@ FFMPEG_URL = (
     "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/"
     "ffmpeg-master-latest-win64-gpl.zip"
 )
+
+
+def _arch() -> str:
+    """'x86_64' or 'aarch64' — the only two architectures Resolve runs on."""
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "aarch64"
+    return "x86_64"
+
+
+# Deno's own release assets. Deliberately not "denort": that is the stripped
+# runtime for compiled Deno binaries, and the EJS wiki calls out picking the
+# wrong one as a common mistake. Each archive holds a single `deno` executable
+# at its root.
+_DENO_ASSET = {
+    ("win32", "x86_64"): "deno-x86_64-pc-windows-msvc.zip",
+    ("win32", "aarch64"): "deno-aarch64-pc-windows-msvc.zip",
+    ("darwin", "x86_64"): "deno-x86_64-apple-darwin.zip",
+    ("darwin", "aarch64"): "deno-aarch64-apple-darwin.zip",
+    ("linux", "x86_64"): "deno-x86_64-unknown-linux-gnu.zip",
+    ("linux", "aarch64"): "deno-aarch64-unknown-linux-gnu.zip",
+}
+_DENO_KEY = ("win32" if _pp.WINDOWS else "darwin" if _pp.MACOS else "linux", _arch())
+DENO_ASSET = _DENO_ASSET.get(_DENO_KEY)
+DENO_URL = ("https://github.com/denoland/deno/releases/latest/download/" + DENO_ASSET
+            if DENO_ASSET else None)
+
+# Roughly what the user is in for on first run, so the log can say so before
+# spending it rather than after. Approximate on purpose — it grows every release
+# and is only ever shown as "~N MB".
+DENO_DOWNLOAD_MB = 40
+
+# The oldest Deno yt-dlp will accept, from the EJS wiki. An older one is worse
+# than none at all from the user's point of view: yt-dlp ignores it and reports
+# that no runtime could be found, giving no hint that the deno on PATH is the
+# problem. So it is version-checked and replaced rather than trusted.
+DENO_MIN = (2, 3, 0)
 
 ProgressCB = Callable[[str], None]
 
@@ -460,6 +507,148 @@ def ensure_ffmpeg(log: ProgressCB) -> str:
         raise MissingDependency(
             "ffmpeg archive downloaded but ffmpeg.exe wasn't found inside it.")
     return found
+
+
+# --------------------------------------------------------------------------- #
+# JavaScript runtime (Deno) — for yt-dlp's YouTube challenge solver
+# --------------------------------------------------------------------------- #
+
+
+# Where Deno's own installer puts it. Same reasoning as _EXTRA_BIN_DIRS above:
+# an app launched from Resolve doesn't inherit a login shell's PATH, so a deno
+# the user installed perfectly well would otherwise look absent.
+def _deno_install_dirs() -> tuple[str, ...]:
+    home = os.path.expanduser("~")
+    dirs = [os.path.join(home, ".deno", "bin")]
+    if _pp.MACOS:
+        dirs += ["/opt/homebrew/bin", "/usr/local/bin"]
+    return tuple(dirs)
+
+
+def find_deno() -> str | None:
+    """Path to a Deno executable, or None.
+
+    Only Deno is looked for. yt-dlp also supports Node, Bun and QuickJS, but
+    Deno is the one it enables by default and the one its wiki recommends, and
+    every extra runtime here is another thing to detect, version-check and
+    explain.
+
+    YEET_DENO therefore has to point at a Deno build: the flag YEETingus passes
+    names deno explicitly, so a Node or QuickJS path would be rejected by yt-dlp.
+    Anyone who wants a different runtime should configure it in yt-dlp's own
+    config file, which YEETingus does not override.
+    """
+    override = os.environ.get("YEET_DENO")
+    if override and os.path.isfile(override):
+        return override
+
+    found = _look_for("deno")
+    if found:
+        return found
+
+    for directory in _deno_install_dirs():
+        path = os.path.join(directory, "deno" + _pp.EXE_SUFFIX)
+        if os.path.isfile(path) and (_pp.WINDOWS or os.access(path, os.X_OK)):
+            return path
+    return None
+
+
+def _deno_new_enough(version: str | None) -> bool:
+    """Whether `version` meets DENO_MIN. An unreadable version counts as too old:
+    a deno that won't report its version won't run the solver either."""
+    if not version:
+        return False
+    found = [int(p) for p in re.findall(r"\d+", version)[:3]]
+    if not found:
+        return False
+    # Pad rather than truncate DENO_MIN: comparing a bare "2" against (2,) would
+    # call it new enough when it means 2.0.0, which is not.
+    while len(found) < len(DENO_MIN):
+        found.append(0)
+    return tuple(found) >= DENO_MIN
+
+
+def ensure_deno(log: ProgressCB) -> str:
+    """find_deno(), downloading Deno's official build first if it is missing.
+
+    Raises MissingDependency on an unsupported architecture, or if the archive
+    turns out not to contain what we expect. The caller treats a failure as a
+    warning rather than a fatal error: yt-dlp still works without a JS runtime,
+    it just loses formats on YouTube.
+    """
+    ours = os.path.join(bin_dir(), "deno" + _pp.EXE_SUFFIX)
+    found = find_deno()
+    if found:
+        version = deno_version(found)
+        if _deno_new_enough(version):
+            return found
+        log(f"Found deno {version or '(unreadable)'} at {found}, but yt-dlp needs "
+            f"{'.'.join(map(str, DENO_MIN))} or newer.")
+        # A previous run may already have fetched a good one. Checked explicitly
+        # because YEET_DENO outranks everything in find_deno — without this, an
+        # override pointing at an old build would re-download on every launch.
+        if found != ours and _deno_new_enough(deno_version(ours)):
+            log(f"  Using the newer copy already in {bin_dir()}.")
+            return ours
+
+    if not DENO_URL:
+        raise MissingDependency(
+            f"No Deno build is published for this platform ({sys.platform} "
+            f"{platform.machine()}).\n"
+            "  Install a JavaScript runtime yourself and point YEET_DENO at it — "
+            "see https://github.com/yt-dlp/yt-dlp/wiki/EJS")
+
+    log(f"Getting Deno — YouTube needs a JavaScript runtime now (~{DENO_DOWNLOAD_MB} MB, "
+        "one time).")
+    log("  Why: https://github.com/yt-dlp/yt-dlp/wiki/EJS")
+    zip_path = os.path.join(bin_dir(), "_deno.zip")
+    _download(DENO_URL, zip_path, log)
+
+    log("  extracting deno…")
+    wanted = "deno" + _pp.EXE_SUFFIX
+    extracted = None
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.namelist():
+            if os.path.basename(member) != wanted:
+                continue
+            dest = os.path.join(bin_dir(), wanted)
+            with zf.open(member) as src, open(dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            extracted = dest
+            break
+    try:
+        os.remove(zip_path)
+    except OSError:
+        pass
+
+    if not extracted:
+        raise MissingDependency(
+            f"Deno archive downloaded but {wanted} wasn't found inside it.")
+    _make_executable(extracted)
+    log(f"  deno ready: {extracted}")
+    return extracted
+
+
+def deno_version(deno: str) -> str | None:
+    """'2.9.4', or None if it won't run. Used for the Settings readout.
+
+    CREATE_NO_WINDOW matters here: the frozen app has no console of its own, so
+    without it every startup flashes an empty black window on screen.
+    """
+    try:
+        proc = subprocess.run([deno, "--version"], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=30,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:  # noqa: BLE001 — absent, wrong architecture, blocked…
+        return None
+    if proc.returncode != 0:
+        return None
+    # "deno 2.9.4 (stable, release, x86_64-pc-windows-msvc)" on the first line.
+    first = (proc.stdout or "").strip().splitlines()
+    if not first:
+        return None
+    parts = first[0].split()
+    return parts[1] if len(parts) > 1 else None
 
 
 # --------------------------------------------------------------------------- #

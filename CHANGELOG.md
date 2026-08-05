@@ -5,6 +5,59 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [1.2.0] — 2026-08-05
+
+YouTube now hides its formats behind a JavaScript challenge, and solving it needs
+a JS runtime that YEETingus didn't have. Some videos had stopped downloading
+altogether. **Upgrading is worth it even if nothing looked broken for you** — the
+same change quietly cost formats on videos that did still work.
+
+### Added
+
+- **A JavaScript runtime is now fetched on first run.** YouTube serves its
+  formats behind a JavaScript challenge, and yt-dlp solves it by running solver
+  scripts in a real JS engine — [EJS](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+  Without one, some videos come back missing formats and others fail outright.
+  YEETingus downloads **Deno**, the runtime yt-dlp enables by default: a one-time
+  ~40 MB fetch into the same folder as yt-dlp, on every platform. Deno publishes
+  official MIT-licensed builds for all of them, so the provenance problem that
+  keeps ffmpeg off that list doesn't apply. A Deno already on `PATH` or in
+  `~/.deno/bin` is used as-is, and `YEET_DENO` points at a specific build.
+- **A Deno older than 2.3.0 is detected and replaced.** yt-dlp rejects those but
+  reports it as "no runtime could be found", never naming the version — so an old
+  `deno` on `PATH` would have looked like a bug with no visible cause. The user's
+  own copy is left alone; it just stops being the one used.
+- **`JS:` row and an Install button in Settings.** The button appears only while
+  a runtime is missing — the download normally happens at startup, so it's there
+  for the first run that had no network.
+- **`--remote-components ejs:github`** is passed to yt-dlp, letting it fall back
+  to fetching the solver scripts from its own repository when the copies bundled
+  inside it are too old for the challenge YouTube is currently serving. yt-dlp
+  hash-checks them before running, and Deno executes them with no filesystem or
+  network access.
+
+### Changed
+
+- The startup log and the "no usable file" hints now name a missing JS runtime as
+  a cause. It produces the same symptoms as a stale yt-dlp — 403s, missing
+  resolutions — and previously there was nothing pointing at the real problem.
+- yt-dlp is asked which flags it supports rather than having it inferred from its
+  version, so an older build simply runs without the runtime instead of failing on
+  an unknown option.
+
+### Fixed
+
+- **A duplicate `YEETingus` entry in Resolve's Scripts menu.** Resolve reads
+  scripts from more than one folder, and an install that landed in a different one
+  than a previous version left both behind. The installer now removes our entry
+  from every folder except the one it just wrote, and says so when a leftover
+  needs administrator rights to delete.
+- The Settings window was sized by a fixed height that the new runtime controls
+  overflowed, putting **Save** and **Cancel** off the bottom edge. It now measures
+  its own content.
+
+---
+
 ## [1.1.0] — 2026-08-01
 
 macOS support. Windows behaviour is unchanged — every platform difference is
