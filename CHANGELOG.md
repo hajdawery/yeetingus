@@ -5,7 +5,7 @@ Notable changes to YEETingus. Format follows
 
 ---
 
-## [1.3.0] — 2026-08-05
+## [1.3.0] — 2026-08-15
 
 Whole videos downloaded above 1080p were unusable in Resolve — dropped frames,
 then MEDIA OFFLINE, and Generate Optimized Media refused to run on them. Clips
