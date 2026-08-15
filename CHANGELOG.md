@@ -5,17 +5,60 @@ Notable changes to YEETingus. Format follows
 
 ---
 
-## [1.2.0] — 2026-08-05
+## [1.3.0] — 2026-08-05
 
-Two separate reasons YouTube downloads were failing: one at fetch time, one after
-the file reached Resolve.
+Whole videos downloaded above 1080p were unusable in Resolve — dropped frames,
+then MEDIA OFFLINE, and Generate Optimized Media refused to run on them. Clips
+with an in and out point were always fine, which is what made it hard to place.
+
+### Added
+
+- **Setting: Whole videos above 1080p.** **Keep quality** (default) keeps the
+  resolution and converts the download to H.264 afterwards; **Keep it quick**
+  skips the conversion and caps whole videos at 1080p instead. Clips are
+  unaffected either way. Stored as `reencode_h264` in `settings.json`.
+
+### Changed
+
+- **The Settings window scrolls, and Save/Cancel are pinned to the bottom.** On a
+  1080p display at 150% scale the settings were taller than the usable screen, so
+  the two buttons the window exists for sat below the bottom edge. A tall window
+  could also open low enough to hang off the screen; its position is now computed
+  and clamped rather than left to Tk.
+
+### Fixed
+
+- **Whole videos above 1080p were unusable in Resolve** — dropped frames, then
+  MEDIA OFFLINE, and Generate Optimized Media refused to run on them. YouTube
+  offers no H.264 above 1080p, so those downloads arrive as VP9 or AV1, and
+  Resolve has no usable decoder for either. Measured on a 4K60 file, VP9 software
+  decode runs at about real time on an RTX 5070 Ti — while Resolve is also
+  compositing. Proxies were never a workaround: building one means decoding the
+  same file.
+
+  Clips were never affected, which is what made this confusing —
+  `--force-keyframes-at-cuts` already re-encodes them to H.264. Whole videos had
+  no such step.
+
+  New setting, **Whole videos above 1080p**:
+  - **Keep quality** (default) — full resolution, converted to H.264 after the
+    download, at about 60% of the video's length. STOP works throughout and
+    progress is reported.
+  - **Keep it quick** — no conversion, but whole videos are capped at 1080p,
+    which is where YouTube's H.264 stops.
+
+  Existing VP9 files are repaired in place the next time you request that video,
+  and the converted copy is reused after that. The old log advice to run Generate
+  Optimized Media has been removed, since it does not work on these clips.
+
+---
+
+## [1.2.0] — 2026-08-05
 
 YouTube now hides its formats behind a JavaScript challenge, and solving it needs
 a JS runtime that YEETingus didn't have. Some videos had stopped downloading
 altogether. **Upgrading is worth it even if nothing looked broken for you** — the
 same change quietly cost formats on videos that did still work.
-
-And whole videos above 1080p were arriving in a codec Resolve can't play.
 
 ### Added
 
@@ -52,28 +95,6 @@ And whole videos above 1080p were arriving in a codec Resolve can't play.
 
 ### Fixed
 
-- **Whole videos above 1080p were unusable in Resolve** — dropped frames, then
-  MEDIA OFFLINE, and Generate Optimized Media refused to run on them. YouTube
-  offers no H.264 above 1080p, so those downloads arrive as VP9 or AV1, and
-  Resolve has no usable decoder for either. Measured on a 4K60 file, VP9 software
-  decode runs at about real time on an RTX 5070 Ti — while Resolve is also
-  compositing. Proxies were never a workaround: building one means decoding the
-  same file.
-
-  Clips were never affected, which is what made this confusing —
-  `--force-keyframes-at-cuts` already re-encodes them to H.264. Whole videos had
-  no such step.
-
-  New setting, **Whole videos above 1080p**:
-  - **Keep quality** (default) — full resolution, converted to H.264 after the
-    download, at about 60% of the video's length. STOP works throughout and
-    progress is reported.
-  - **Keep it quick** — no conversion, but whole videos are capped at 1080p,
-    which is where YouTube's H.264 stops.
-
-  Existing VP9 files are repaired in place the next time you request that video,
-  and the converted copy is reused after that. The old log advice to run Generate
-  Optimized Media has been removed, since it does not work on these clips.
 - **A duplicate `YEETingus` entry in Resolve's Scripts menu.** Resolve reads
   scripts from more than one folder, and an install that landed in a different one
   than a previous version left both behind. The installer now removes our entry
