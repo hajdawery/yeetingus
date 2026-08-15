@@ -100,6 +100,12 @@ Built for DaVinci Resolve, where no equivalent tool existed.
   offers and tells you, instead of failing on a request the video can't satisfy
 - **Smart codec preference** — prefers H.264 (which scrubs smoothly in Resolve)
   *without* costing you resolution
+- **🎬 Always playable in Resolve** — above 1080p YouTube only serves VP9 and AV1,
+  which Resolve can't decode: playback stutters and the clip goes MEDIA OFFLINE.
+  Clips are re-encoded to H.264 as part of the trim, and **whole videos are
+  converted afterwards** so they behave the same. Prefer speed over resolution?
+  One setting swaps it for 1080p H.264 with no conversion
+  ([details](#-codecs-and-smooth-playback))
 - **Real quality readout** — after each clip, the actual resolution, codec and frame
   rate are reported, read from the file itself rather than assumed
 
@@ -122,7 +128,7 @@ Built for DaVinci Resolve, where no equivalent tool existed.
 - **⏹️ STOP mid-job** — cancels the download, kills the whole process tree and cleans
   up the partial files
 - **📊 Progress with real percentages** — parsed from the downloader, with clear
-  phases: reading info → downloading → merging → pasting
+  phases: reading info → downloading → merging → converting → pasting
 - **📜 Collapsible log** — hidden by default; **Show log** docks it beside the controls
   and widens the window, so it never covers or shifts anything. It keeps recording
   while hidden, and opens itself automatically if something fails
@@ -133,8 +139,10 @@ Built for DaVinci Resolve, where no equivalent tool existed.
   API, so there it follows the system appearance)
 - **🔄 Self-updating downloader** — an **Update yt-dlp** button, because YouTube
   changes things and breakage is a matter of when, not if
-- **📦 Zero-dependency setup** — yt-dlp and ffmpeg are fetched automatically on first
-  run; no Python needed to *run* the app
+- **📦 Zero-dependency setup** — yt-dlp and a JavaScript runtime are fetched
+  automatically on first run, as is ffmpeg on Windows (on macOS that one is
+  `brew install ffmpeg`, and [there's a reason](#-ffmpeg-on-macos)). No Python
+  needed to *run* the app
 
 ---
 
@@ -595,7 +603,7 @@ One standalone app — no server, no port, nothing listening.
         │
         │  YEETingus.lua spawns the app (never blocks Resolve)
         ▼
-  YEETingus.exe / .app  ── subprocess ──▶  yt-dlp + ffmpeg  (fetch the section)
+  YEETingus.exe / .app  ── subprocess ──▶  yt-dlp + ffmpeg  (fetch, trim, convert)
         │                                      └── deno  (solve YouTube's JS challenge)
         │
         └── Resolve's official external Python scripting API
@@ -689,10 +697,14 @@ nothing open", because those need different fixes.
 <details>
 <summary><b>A whole video drops frames, goes MEDIA OFFLINE, and won't generate optimised media</b></summary>
 
-The clip is **VP9 or AV1**, which Resolve can't decode usefully. It only happens to
-**whole videos above 1080p** — YouTube has no H.264 up there, and with no in/out
-point there's no re-encode to fix it on the way through. Clips with an in and out
-point are always H.264 and are never affected.
+The clip is **VP9 or AV1**, which Resolve can't decode usefully. It only affects
+**whole videos above 1080p**, because YouTube has no H.264 up there. Clips with an
+in and out point are always H.264 and are never affected — trimming re-encodes
+them on the way through.
+
+You'll see this on a file downloaded by **1.2.0 or earlier**, or with
+**Keep it quick** selected. From 1.3.0 the default converts whole videos to H.264
+automatically.
 
 Generate Optimized Media fails for the same reason it stutters: making the proxy
 means decoding the file.
@@ -783,7 +795,10 @@ the log and open an issue if it isn't.
 - 🍎 **macOS: light title bar in Light Mode** — the Windows build tints its title
   bar dark to match the window; macOS has no equivalent API, so in Light Mode you
   get a light title bar above a near-black window
-- 🎞️ **No transcode on ingest** — deliberate; see
+- 🎞️ **Whole videos above 1080p cost a conversion** — YouTube offers no H.264 up
+  there and Resolve can't decode VP9 or AV1, so the download is re-encoded
+  afterwards, adding roughly 60% of the video's length. **Keep it quick** in
+  Settings trades that for a 1080p cap instead. Clips are unaffected. See
   [Codecs and smooth playback](#-codecs-and-smooth-playback)
 - 🔄 **No auto-update yet** — the app doesn't check for new versions of itself
 - 📼 **Mostly YouTube** — **Twitch clips work too** (tested). Downloading is handled by
