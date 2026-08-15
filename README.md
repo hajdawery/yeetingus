@@ -461,6 +461,10 @@ reinstalls:
   are entitled to empty — that would take media your timelines reference offline.
 - ⏱️ **Default clip length** — `15s` · `30s` · `60s` · `90s`, applied to the end point
   when the app opens
+- 🎥 **Whole videos above 1080p** — **Keep quality** (full resolution, converted to
+  H.264 afterwards) or **Keep it quick** (no conversion, capped at 1080p). Only
+  affects whole-video downloads; clips are always H.264 either way
+  ([why](#-codecs-and-smooth-playback))
 - 🧰 **Tools** — the resolved yt-dlp, ffmpeg and JS runtime paths and versions
 - 🩺 **Resolve diagnostics** — the detected scripting library and Python version, in red
   if either is wrong. This is the first thing to check on a new machine.
@@ -535,15 +539,50 @@ The catch is what YouTube actually serves:
 So anything at 1080p or below arrives as H.264 and plays back smoothly. At 1440p/4K
 there is no H.264 to choose.
 
-> [!TIP]
-> **If a 1440p/4K clip stutters**, use Resolve's own proxies: right-click the clip in
-> the Media Pool → **Generate Optimized Media**. Resolve manages that cache and swaps
-> proxies in transparently, which beats anything this tool could do — and avoids the
-> 10–45× disk cost of writing intermediate copies. The log points this out whenever a
-> clip isn't H.264.
-
 The sort order matters: a naive "H.264 else anything" preference would silently cap
 *Best available* at 1080p, since that's as high as YouTube's H.264 goes.
+
+### Clips are fine. Whole videos above 1080p are not.
+
+**Clips with an in and out point are always H.264**, whatever you picked.
+`--force-keyframes-at-cuts` re-encodes around the cut points to make the trim
+frame-accurate, and H.264 is what comes out. Nothing to think about.
+
+**A whole video above 1080p is a different story.** There's no section to cut, so
+the VP9 or AV1 stream is passed through untouched — and Resolve has no usable
+decoder for either:
+
+- playback **drops frames**
+- the clip eventually reads **MEDIA OFFLINE**
+- **Generate Optimized Media fails too**, because building the proxy means
+  decoding the same file
+
+That last point is worth stating plainly: proxies are not a workaround here.
+
+> [!NOTE]
+> Measured on a 4K60 VP9 file, software decode runs at roughly **real time** on an
+> RTX 5070 Ti — and Resolve is doing that while compositing. It isn't a tuning
+> problem.
+
+Remuxing into a friendlier container doesn't help either: WebM only permits
+Opus or Vorbis audio, and Resolve can't decode Opus. VP9 has nowhere good to sit.
+
+### What YEETingus does about it
+
+A setting under **Whole videos above 1080p**:
+
+| | What you get |
+|---|---|
+| **Keep quality** *(default)* | Full resolution, converted to H.264 after the download. Costs about **60% of the video's length** — a 10-minute video adds ~6 minutes. STOP works throughout, and progress is shown. |
+| **Keep it quick** | No conversion and no waiting, but whole videos are **capped at 1080p**, since that's the highest H.264 YouTube offers. |
+
+Either way you end up with a file Resolve can actually play. The conversion is
+H.264 CRF 20 with the audio stream copied, not re-encoded — the AAC track is
+already pinned by the format sort, so a second lossy pass would cost quality for
+nothing.
+
+It also repairs itself: a VP9 file left over from an older version is converted
+the next time you request that video, and the result is reused after that.
 
 ---
 
@@ -648,6 +687,28 @@ nothing open", because those need different fixes.
 </details>
 
 <details>
+<summary><b>A whole video drops frames, goes MEDIA OFFLINE, and won't generate optimised media</b></summary>
+
+The clip is **VP9 or AV1**, which Resolve can't decode usefully. It only happens to
+**whole videos above 1080p** — YouTube has no H.264 up there, and with no in/out
+point there's no re-encode to fix it on the way through. Clips with an in and out
+point are always H.264 and are never affected.
+
+Generate Optimized Media fails for the same reason it stutters: making the proxy
+means decoding the file.
+
+**Fix:** open **Settings → Whole videos above 1080p** and make sure it's on
+**Keep quality**, then download the video again. It's converted to H.264 at full
+resolution, and the converted file is reused from then on. Deleting the old
+`…-full.mp4` first isn't necessary — the app checks the codec of what's already
+there and converts it in place.
+
+Prefer not to wait? **Keep it quick** caps whole videos at 1080p H.264 instead.
+Full background in [Codecs and smooth playback](#-codecs-and-smooth-playback).
+
+</details>
+
+<details>
 <summary><b>"No JavaScript runtime" / a video downloads in a browser but not here</b></summary>
 
 YouTube gates its formats behind a JavaScript challenge, and yt-dlp needs a JS
@@ -695,8 +756,14 @@ and said so in the log, rather than failing.
 <details>
 <summary><b>Playback stutters on a 4K clip</b></summary>
 
-That'll be VP9 or AV1 — YouTube has no H.264 above 1080p. Right-click the clip in the
-Media Pool → **Generate Optimized Media**.
+That'll be VP9 or AV1 — YouTube has no H.264 above 1080p, and Resolve can't decode
+either at a usable speed. **Generate Optimized Media won't help**: it has to decode
+the file to build the proxy.
+
+If it's a **whole video**, Settings → **Whole videos above 1080p** → **Keep quality**
+converts it to H.264; re-download it once and it's fixed for good. If it's a **clip**
+with an in and out point it should already be H.264 — check the `Quality:` line in
+the log and open an issue if it isn't.
 
 </details>
 

@@ -7,10 +7,15 @@ Notable changes to YEETingus. Format follows
 
 ## [1.2.0] — 2026-08-05
 
+Two separate reasons YouTube downloads were failing: one at fetch time, one after
+the file reached Resolve.
+
 YouTube now hides its formats behind a JavaScript challenge, and solving it needs
 a JS runtime that YEETingus didn't have. Some videos had stopped downloading
 altogether. **Upgrading is worth it even if nothing looked broken for you** — the
 same change quietly cost formats on videos that did still work.
+
+And whole videos above 1080p were arriving in a codec Resolve can't play.
 
 ### Added
 
@@ -47,6 +52,28 @@ same change quietly cost formats on videos that did still work.
 
 ### Fixed
 
+- **Whole videos above 1080p were unusable in Resolve** — dropped frames, then
+  MEDIA OFFLINE, and Generate Optimized Media refused to run on them. YouTube
+  offers no H.264 above 1080p, so those downloads arrive as VP9 or AV1, and
+  Resolve has no usable decoder for either. Measured on a 4K60 file, VP9 software
+  decode runs at about real time on an RTX 5070 Ti — while Resolve is also
+  compositing. Proxies were never a workaround: building one means decoding the
+  same file.
+
+  Clips were never affected, which is what made this confusing —
+  `--force-keyframes-at-cuts` already re-encodes them to H.264. Whole videos had
+  no such step.
+
+  New setting, **Whole videos above 1080p**:
+  - **Keep quality** (default) — full resolution, converted to H.264 after the
+    download, at about 60% of the video's length. STOP works throughout and
+    progress is reported.
+  - **Keep it quick** — no conversion, but whole videos are capped at 1080p,
+    which is where YouTube's H.264 stops.
+
+  Existing VP9 files are repaired in place the next time you request that video,
+  and the converted copy is reused after that. The old log advice to run Generate
+  Optimized Media has been removed, since it does not work on these clips.
 - **A duplicate `YEETingus` entry in Resolve's Scripts menu.** Resolve reads
   scripts from more than one folder, and an install that landed in a different one
   than a previous version left both behind. The installer now removes our entry

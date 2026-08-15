@@ -38,9 +38,15 @@ from version import APP_NAME, AUTHOR_URL, COPYRIGHT, __version__  # noqa: E402
 
 # Progress is split into bands so the bar moves through the whole job, not just
 # the download: info lookup, download, then the Resolve insert.
-P_INFO, P_DOWNLOAD, P_INSERT = 0.06, 0.80, 0.97
+# Progress-bar milestones. P_CONVERT is only reached when a whole video needs
+# re-encoding to H.264; without that step the bar goes straight from P_DOWNLOAD
+# to P_INSERT.
+P_INFO, P_DOWNLOAD, P_CONVERT, P_INSERT = 0.06, 0.70, 0.94, 0.97
 
 _PCT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+
+# ffmpeg -progress output, for the re-encode pass: "out_time_us=12345678".
+_FFMPEG_TIME_RE = re.compile(r"^out_time_us=(\d+)", re.MULTILINE)
 
 # Width of the log panel docked to the right; the window grows by this when the
 # log is shown. Authored at 96 DPI like every other pixel value.
@@ -163,6 +169,19 @@ def _video_heights(data: dict) -> list[int]:
 # almost always does.
 FORMAT_SORT = "res,vcodec:h264,acodec:aac"
 
+# The other way round: codec first, so H.264 wins even when that costs
+# resolution. Used for a whole-video download when the user has turned the
+# re-encode off — the point is then to avoid ever receiving VP9/AV1, which caps
+# the result at 1080p because that is as high as YouTube's H.264 goes.
+FORMAT_SORT_H264_FIRST = "vcodec:h264,res,acodec:aac"
+
+# Re-encode settings for _to_h264. CRF 20 is visually transparent for editing
+# footage. The preset is "medium" rather than something faster because decoding
+# the VP9 source dominates the run: measured on a 4K60 clip, "fast" saved 7% of
+# the time and cost 14% more file size, so the slower preset is the better trade.
+REENCODE_CRF = "20"
+REENCODE_PRESET = "medium"
+
 # yt-dlp's intermediate per-stream files, e.g. "<stem>.f313.webm" (video only) and
 # "<stem>.f140.m4a" (audio only), which it merges and then deletes. An interrupted
 # download leaves them behind, and handing one to Resolve gives MEDIA OFFLINE.
@@ -257,6 +276,7 @@ class YeetApp:
         self.settings = config.load()
         self.download_dir = self.settings["download_dir"]
         self.default_length = self.settings["default_length"]
+        self.reencode_h264 = self.settings["reencode_h264"]
         # "Update yt-dlp" lives in the Settings window, which may be closed while
         # an update is still running — hence the nullable reference.
         self.update_btn: T.RoundButton | None = None
@@ -833,10 +853,56 @@ class YeetApp:
         T.apply_titlebar_theme(win)
         win.bind("<FocusIn>", lambda _e: T.apply_titlebar_theme(win), add="+")
 
-        tk.Label(win, text="Settings", bg=T.BG, fg=T.TEXT,
+        # Save/Cancel and the credit are packed first, against the bottom edge, so
+        # the settings above them can never push them off it. On a 1080p display
+        # at 150% scale the cards alone are taller than the usable screen height,
+        # and a plain top-to-bottom pack put the two buttons the window exists for
+        # out of reach. Everything above them scrolls instead.
+        footer = tk.Frame(win, bg=T.BG)
+        footer.pack(side="bottom", fill="x")
+        # side="bottom" for both, and buttons first, so the credit line ends up
+        # above the buttons rather than below them.
+        buttons = tk.Frame(footer, bg=T.BG)
+        buttons.pack(side="bottom", fill="x", padx=T.px(26), pady=(10, 22))
+        about = tk.Frame(footer, bg=T.BG)
+
+        scroll_host = tk.Frame(win, bg=T.BG)
+        scroll_host.pack(side="top", fill="both", expand=True)
+        canvas = tk.Canvas(scroll_host, bg=T.BG, highlightthickness=0, bd=0)
+        vbar = tk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(canvas, bg=T.BG)
+        body_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _sync_scroll(_e: tk.Event | None = None) -> None:
+            """Keep the scrollregion current, and show the bar only when needed."""
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(body_id, width=canvas.winfo_width())
+            overflows = body.winfo_reqheight() > canvas.winfo_height()
+            if overflows and not vbar.winfo_ismapped():
+                vbar.pack(side="right", fill="y")
+            elif not overflows and vbar.winfo_ismapped():
+                vbar.pack_forget()
+
+        body.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", _sync_scroll)
+
+        def _on_wheel(e: tk.Event) -> None:
+            if body.winfo_reqheight() <= canvas.winfo_height():
+                return              # nothing to scroll; don't swallow the event
+            # Windows/macOS report delta; X11 sends Button-4/5 instead.
+            step = -1 if getattr(e, "num", None) == 4 else 1 if getattr(e, "num", None) == 5 \
+                else (-1 if e.delta > 0 else 1)
+            canvas.yview_scroll(step, "units")
+
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            win.bind_all(sequence, _on_wheel, add="+")
+
+        tk.Label(body, text="Settings", bg=T.BG, fg=T.TEXT,
                  font=(T.FONT, 17, "bold")).pack(anchor="w", padx=T.px(26), pady=(T.px(22), T.px(16)))
 
-        card = T.Card(win)
+        card = T.Card(body)
         card.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         b = card.body
         T.step_header(b, 1, "Clip storage").pack(anchor="w", pady=(0, T.px(16)))
@@ -868,7 +934,7 @@ class YeetApp:
                  bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(T.px(10), 0))
 
         # Defaults ---------------------------------------------------------- #
-        defaults_card = T.Card(win)
+        defaults_card = T.Card(body)
         defaults_card.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         db = defaults_card.body
         T.step_header(db, 2, "Default clip length").pack(anchor="w", pady=(0, T.px(16)))
@@ -883,10 +949,38 @@ class YeetApp:
         T.Segmented(db, [(str(s), f"{s}s") for s in config.LENGTH_CHOICES],
                     length_var).pack(fill="x", pady=(T.px(9), 0))
 
-        info = T.Card(win)
+        # Whole-video codec ---------------------------------------------------- #
+        codec_card = T.Card(body)
+        codec_card.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
+        cb = codec_card.body
+        T.step_header(cb, 3, "Whole videos above 1080p").pack(
+            anchor="w", pady=(0, T.px(16)))
+        T.field_label(
+            cb, "YouTube only has H.264 up to 1080p — above that it's VP9/AV1, "
+                "which Resolve can't play").pack(anchor="w")
+        reencode_var = tk.StringVar(value="1" if self.reencode_h264 else "0")
+        T.Segmented(cb, [("1", "Keep quality"), ("0", "Keep it quick")],
+                    reencode_var).pack(fill="x", pady=(T.px(9), T.px(9)))
+        hint = tk.Label(cb, bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9),
+                        justify="left", anchor="w", wraplength=T.px(520))
+        hint.pack(fill="x")
+
+        def _codec_hint(*_a) -> None:
+            hint.configure(text=(
+                "Full resolution, converted to H.264 afterwards. Adds roughly "
+                "60% of the video's length to the job — a 10-minute video takes "
+                "about 6 extra minutes. STOP still works."
+                if reencode_var.get() == "1" else
+                "No waiting, but whole videos are capped at 1080p, because that "
+                "is the highest resolution YouTube offers in H.264. Clips with an "
+                "in/out point are unaffected and stay full resolution."))
+        _codec_hint()
+        reencode_var.trace_add("write", _codec_hint)
+
+        info = T.Card(body)
         info.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         ib = info.body
-        T.step_header(ib, 3, "Tools").pack(anchor="w", pady=(0, 14))
+        T.step_header(ib, 4, "Tools").pack(anchor="w", pady=(0, 14))
         # Live vars so an update performed from this window refreshes in place.
         self.ytdlp_info_var.set(self._ytdlp_info_text())
         self.ffmpeg_info_var.set(self.ffmpeg_path or "not found")
@@ -958,11 +1052,18 @@ class YeetApp:
                 self.update_btn = None
                 self.ffmpeg_btn = None
                 self.js_btn = None
+                # bind_all is application-wide, so these outlive the window they
+                # were made for and would scroll a destroyed canvas on the next
+                # wheel event anywhere in the app.
+                for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                    try:
+                        win.unbind_all(sequence)
+                    except tk.TclError:
+                        pass
         win.bind("<Destroy>", _forget)
 
         # About / credit ---------------------------------------------------- #
-        about = tk.Frame(win, bg=T.BG)
-        about.pack(fill="x", padx=T.px(26), pady=(T.px(2), 0))
+        about.pack(side="bottom", fill="x", padx=T.px(26), pady=(T.px(2), 0))
         tk.Label(about, text=f"{APP_NAME} v{__version__}", bg=T.BG, fg=T.MUTED,
                  font=(T.FONT, 9)).pack(side="left")
         credit = tk.Label(about, text=COPYRIGHT, bg=T.BG, fg=T.MUTED,
@@ -972,9 +1073,6 @@ class YeetApp:
         credit.bind("<Enter>", lambda _e: credit.configure(fg=T.ACCENT))
         credit.bind("<Leave>", lambda _e: credit.configure(fg=T.MUTED))
         T.tooltip(credit, AUTHOR_URL)
-
-        buttons = tk.Frame(win, bg=T.BG)
-        buttons.pack(fill="x", padx=T.px(26), pady=(10, 22))
 
         def save() -> None:
             new_dir = dir_var.get().strip()
@@ -997,11 +1095,18 @@ class YeetApp:
             self.settings["default_length"] = length
             self.default_length = length
 
+            reencode = reencode_var.get() == "1"
+            self.settings["reencode_h264"] = reencode
+            self.reencode_h264 = reencode
+
             try:
                 path = config.save(self.settings)
                 self.log(f"Clips → {new_dir}")
                 self.log(f"Default clip length → {seconds_to_timestamp(length)} "
                          "(applied when the app opens)")
+                self.log("Whole videos above 1080p → " + (
+                    "full resolution, converted to H.264" if reencode else
+                    "capped at 1080p H.264, no conversion"))
                 self.log(f"Settings saved to {path}")
             except OSError as e:
                 self.log(f"ERROR saving settings: {e}")
@@ -1012,12 +1117,24 @@ class YeetApp:
         T.ghost_button(buttons, "Cancel", win.destroy, height=48, width=120).pack(
             side="left", padx=(T.px(10), 0))
 
-        # Height from the content rather than a constant, now that the card can
-        # grow or shrink by a whole button depending on what's installed. A fixed
-        # figure was already 32px short of the tallest case, which put Save and
-        # Cancel off the bottom edge — the two controls the window exists for.
+        # Height from the content rather than a constant, since the cards grow and
+        # shrink with what's installed and what's selected. Measured as body +
+        # footer: the canvas in between has no natural height of its own, so
+        # win.winfo_reqheight() would report far too little. _fit_height then
+        # clamps to the screen, and anything that doesn't fit scrolls.
         win.update_idletasks()
-        win.geometry(f"{T.px(640)}x{self._fit_height(win.winfo_reqheight())}")
+        width = T.px(640)
+        height = self._fit_height(body.winfo_reqheight() + footer.winfo_reqheight())
+        # Placed explicitly rather than left to Tk. A tall settings window opens
+        # near the main one and then extends past the bottom of the display, which
+        # puts Save and Cancel off screen just as surely as clipping them did.
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - width) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - height) // 3)
+        x = max(0, min(x, self.root.winfo_screenwidth() - width))
+        y = max(0, min(y, int(self.root.winfo_screenheight() * 0.96) - height))
+        win.geometry(f"{width}x{height}+{x}+{y}")
+        _sync_scroll()
+        canvas.yview_moveto(0)   # open at the top, not wherever the last resize left it
 
     # ---- startup ---------------------------------------------------------- #
 
@@ -1451,13 +1568,126 @@ class YeetApp:
 
     @staticmethod
     def _scrubs_poorly(codec: str) -> bool:
-        """VP9 and AV1 decode slowly in Resolve; H.264 hardware-decodes.
+        """Whether Resolve will struggle to decode `codec`.
+
+        "Slowly" undersells it. Measured on a 4K60 VP9 file, software decode runs
+        at about real time on an RTX 5070 Ti — and Resolve is doing that while
+        also compositing, so playback drops frames and the clip eventually reads
+        MEDIA OFFLINE. Generate Optimized Media doesn't rescue it either, because
+        building the proxy means decoding the same file.
 
         YouTube only offers H.264 up to 1080p, so anything above that is
-        necessarily one of these.
+        necessarily one of these. H.264 hardware-decodes and is fine.
         """
         codec = (codec or "").lower()
         return codec.startswith(("vp0", "vp8", "vp9", "av0", "av1"))
+
+    def _stream_duration(self, path: str) -> float | None:
+        """Container duration in seconds, for driving the re-encode progress bar."""
+        ffprobe = deps.find_ffprobe()
+        if not ffprobe:
+            return None
+        try:
+            proc = subprocess.run(
+                [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=nw=1:nk=1", path],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                timeout=60, **_spawn_kwargs())
+            return float((proc.stdout or "").strip())
+        except Exception:  # noqa: BLE001 — no duration just means a vaguer bar
+            return None
+
+    def _to_h264(self, path: str) -> str | None:
+        """Re-encode `path` to H.264 in place, returning the new path.
+
+        Only ever called for a whole-video download that came back VP9 or AV1,
+        which happens above 1080p because YouTube offers nothing else up there.
+        Resolve has no usable decoder for either: playback drops frames, and the
+        clip eventually goes MEDIA OFFLINE. Generate Optimized Media is no escape
+        — it has to decode the file too, and fails for the same reason.
+
+        Sections never need this; --force-keyframes-at-cuts already re-encodes
+        them, which is why clips worked when full videos didn't.
+
+        Audio is copied rather than re-encoded: FORMAT_SORT already pinned it to
+        AAC, and a second lossy pass over it would be loss for nothing.
+
+        Returns None on failure or cancellation, leaving the original untouched —
+        a VP9 file that plays badly still beats no file at all.
+        """
+        ffmpeg = self.ffmpeg_path or deps.find_ffmpeg()
+        if not ffmpeg:
+            self.log("Can't re-encode: ffmpeg wasn't found. Keeping the original.")
+            return None
+
+        duration = self._stream_duration(path)
+        stem, ext = os.path.splitext(path)
+        # A distinct name, so an interrupted pass can never be mistaken for the
+        # finished file: only a clean exit gets to replace the original.
+        tmp = f"{stem}.h264-tmp{ext}"
+
+        self.log("Converting to H.264 so Resolve can actually play it…")
+        if duration:
+            # 0.6x realtime, measured on 4K60 VP9. Rounded up and never phrased
+            # as "0 min", which is what a short clip used to report.
+            estimate = duration * 0.6
+            rough = ("under a minute" if estimate < 60
+                     else f"around {estimate / 60:.0f} min")
+            self.log(f"  {seconds_to_timestamp(round(duration))} of video — expect "
+                     f"{rough}. STOP still works.")
+
+        cmd = [
+            ffmpeg, "-y", "-nostdin",
+            "-i", path,
+            "-c:v", "libx264", "-preset", REENCODE_PRESET, "-crf", REENCODE_CRF,
+            "-pix_fmt", "yuv420p",       # Resolve wants 8-bit 4:2:0
+            "-movflags", "+faststart",   # index up front, so import is instant
+            "-c:a", "copy",
+            "-progress", "pipe:1", "-nostats", "-loglevel", "error",
+            tmp,
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                **_spawn_kwargs())
+        self.active_proc = proc
+        assert proc.stdout is not None
+        errors: list[str] = []
+        for line in proc.stdout:
+            if self._cancelled():
+                break
+            line = line.rstrip()
+            if not line:
+                continue
+            m = _FFMPEG_TIME_RE.match(line)
+            if m and duration:
+                done = int(m.group(1)) / 1_000_000 / duration
+                self._progress(P_DOWNLOAD + (P_CONVERT - P_DOWNLOAD) * min(done, 1.0),
+                               f"Converting to H.264… {min(done, 1.0) * 100:.0f}%")
+            elif not line.startswith(("frame=", "fps=", "bitrate=", "total_size=",
+                                      "out_time", "dup_frames=", "drop_frames=",
+                                      "speed=", "progress=", "stream_")):
+                errors.append(line)      # a real message, not progress bookkeeping
+                self.log(f"  {line}")
+        proc.wait()
+        self.active_proc = None
+
+        if self._cancelled() or proc.returncode != 0:
+            if proc.returncode != 0 and not self._cancelled():
+                self.log(f"Re-encode failed (exit {proc.returncode}); "
+                         "keeping the original file.")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return None
+
+        try:
+            os.replace(tmp, path)
+        except OSError as e:
+            self.log(f"Re-encoded fine but couldn't replace the original: {e}")
+            return None
+        self.log("  Converted. Re-running this video will reuse the H.264 copy.")
+        return path
 
     def _resolve_quality(self, max_height: int | None, meta: dict) -> int | None:
         """Reconcile the requested cap with what the video actually offers.
@@ -1505,6 +1735,20 @@ class YeetApp:
                 self.reveal_log()
                 return
 
+            # Whole videos above 1080p arrive as VP9 or AV1, which Resolve can't
+            # usefully decode. Done here rather than inside _download so the
+            # reuse path gets it too: a file fetched by an older version, or by a
+            # run with this setting off, is repaired the next time it's used.
+            whole = start is None or end is None
+            if whole and self.reencode_h264:
+                codec = ((self._probe_stream(path) or {}).get("codec_name") or "")
+                if self._scrubs_poorly(codec):
+                    self.log(f"This is {codec}, which Resolve can't play properly.")
+                    converted = self._to_h264(path)
+                    if self._cancelled():
+                        self._stopped()
+                        return
+                    path = converted or path
 
             if insert:
                 # Past this point the file exists; the insert itself is quick and
@@ -1528,12 +1772,18 @@ class YeetApp:
 
             codec = str((stream or {}).get("codec_name") or "")
             if self._scrubs_poorly(codec):
-                # YouTube has no H.264 above 1080p, so this is unavoidable at
-                # 1440p/4K. Resolve's own proxies handle it better than we could.
-                self.log(f"  Note: {codec} decodes slowly in Resolve. If playback "
-                         "stutters, right-click")
-                self.log("        the clip in the Media Pool -> Generate Optimized "
-                         "Media.")
+                # Reached when the conversion was declined, failed, or the codec
+                # came through on a section. Generate Optimized Media is NOT
+                # suggested here: it has to decode the file too, so it fails on
+                # exactly the clips that need it.
+                self.log(f"  WARNING: {codec} — Resolve has no usable decoder for "
+                         "this.")
+                self.log("           Expect dropped frames, and the clip may go "
+                         "MEDIA OFFLINE.")
+                if whole and not self.reencode_h264:
+                    self.log("           Switch 'Whole videos above 1080p' to "
+                             "'Keep quality' in Settings")
+                    self.log("           to convert it to H.264 automatically.")
 
             self.log("Make sure to credit the sources!", tag="highlight")
             self._progress(1.0, f"Done — {res['clipName']}")
@@ -1610,7 +1860,12 @@ class YeetApp:
             *self.js_args,
             url,
             "-f", format_selector(max_height),
-            "-S", FORMAT_SORT,
+            # With the re-encode off, a whole video must arrive as H.264 in the
+            # first place, since nothing downstream will fix it — and that means
+            # letting codec outrank resolution. Everywhere else, resolution wins
+            # and H.264 is only the tiebreaker.
+            "-S", (FORMAT_SORT_H264_FIRST if whole and not self.reencode_h264
+                   else FORMAT_SORT),
             "--merge-output-format", "mp4",
             "--no-playlist",
             "-o", os.path.join(job_dir, stem + ".%(ext)s"),
