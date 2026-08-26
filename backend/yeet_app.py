@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 
 import tkinter as tk
@@ -55,10 +56,17 @@ LOG_PANEL_W = 420
 def _spawn_kwargs() -> dict:
     """subprocess keyword arguments for launching an external tool.
 
-    Two platform concerns, both invisible when they work:
+    Three platform concerns, all invisible when they work:
 
     * No console window on Windows. CREATE_NO_WINDOW doesn't exist on POSIX, and
       passing 0 there is accepted and ignored.
+    * UTF-8 output. yt-dlp and ffmpeg write UTF-8 whatever the console codepage
+      is, but `text=True` alone decodes using the locale — cp1252 on a Western
+      Windows install — which turned a Polish title into
+      "WiedÅºmin 3 ... PieÅ›ni przeszÅ‚oÅ›ci" in the log. Only the echoed output
+      was affected, never the files: yt-dlp escapes non-ASCII in the JSON the
+      metadata probe reads, so folder names were always correct. errors=replace
+      because a mangled character must never take down a download.
     * A killable process group. yt-dlp spawns ffmpeg as a child, so STOP has to
       take out the whole tree — killing the parent alone leaves ffmpeg running
       and still writing to the output file. Windows does this at kill time with
@@ -67,7 +75,8 @@ def _spawn_kwargs() -> dict:
       the child in a fresh process group whose id equals its pid, which
       os.killpg can then signal as a unit. Set it here or STOP cannot work.
     """
-    kwargs: dict = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    kwargs: dict = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    "encoding": "utf-8", "errors": "replace"}
     if sys.platform != "win32":
         kwargs["start_new_session"] = True
     return kwargs
@@ -803,33 +812,105 @@ class YeetApp:
         self._set_js_info(self._js_info_text())
         return True
 
+    def _run_logged(self, args: list[str]) -> tuple[int, str]:
+        """Run a command, stream it to the log, and return (exit code, output)."""
+        self.log("Running: " + " ".join(args))
+        proc = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            bufsize=1, **_spawn_kwargs())
+        assert proc.stdout is not None
+        lines: list[str] = []
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                lines.append(line)
+                self.log(f"  {line}")
+        return proc.wait(), "\n".join(lines)
+
+    @staticmethod
+    def _is_pip_install(output: str) -> bool:
+        """Whether a failed `-U` was refused because pip owns this copy.
+
+        yt-dlp's exact wording is "You installed yt-dlp with pip or using the
+        wheel from PyPi; Use that to update", so match on the durable part
+        rather than the whole sentence — and note PyPi's unconventional casing,
+        which is why this is case-insensitive.
+        """
+        low = output.lower()
+        return "with pip" in low or "wheel from pypi" in low
+
+    @staticmethod
+    def _interpreter_for(script: str) -> str | None:
+        """The Python that owns a pip console script, or None.
+
+        pip drops `yt-dlp.exe` in `<prefix>\\Scripts` on Windows and `yt-dlp` in
+        `<prefix>/bin` elsewhere, with the interpreter one step away in both
+        layouts. Derived from the script's own path rather than sys.executable,
+        which in a frozen build is YEETingus itself — running `-m pip` on that
+        would relaunch the app instead of upgrading anything.
+        """
+        bindir = os.path.dirname(os.path.abspath(script))
+        candidates = ([os.path.join(os.path.dirname(bindir), "python.exe"),
+                       os.path.join(bindir, "python.exe")] if sys.platform == "win32"
+                      else [os.path.join(bindir, "python3"),
+                            os.path.join(bindir, "python")])
+        return next((p for p in candidates if os.path.isfile(p)), None)
+
     def _update_ytdlp(self) -> None:
+        """Update yt-dlp by whichever route actually owns this copy.
+
+        Three ways it can be installed, and they don't update the same way:
+
+          * a standalone binary, which self-updates with -U;
+          * `python -m yt_dlp`, which pip owns;
+          * a **pip console script**, which looks exactly like a standalone
+            binary from here — same single path, same name — but refuses -U with
+            "You installed yt-dlp with pip... Use that to update" and exit 100.
+
+        That third case used to dead-end: the button reported the exit code and
+        stopped, with no hint that pip was the answer, while a stale yt-dlp is
+        the single most common reason downloads start failing. So a -U refusal
+        is now detected and retried through pip automatically.
+        """
         self._enable_update_btn(False)
         try:
             cmd = list(self.ytdlp_cmd or [])
-            # A standalone binary self-updates with -U; the pip module can't,
-            # so upgrade the package instead.
-            if len(cmd) == 1:
-                args = cmd + ["-U"]
+            if not cmd:
+                self.log("ERROR: yt-dlp isn't resolved yet; nothing to update.")
+                return
+
+            before = self.ytdlp_version
+            if len(cmd) > 1:
+                # Already `python -m yt_dlp`: pip owns it, and cmd[0] is the
+                # interpreter to use.
+                code, _ = self._run_logged([cmd[0], "-m", "pip", "install",
+                                            "-U", "yt-dlp"])
             else:
-                args = [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"]
-            self.log("Updating yt-dlp: " + " ".join(args))
-            proc = subprocess.Popen(
-                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                bufsize=1, **_spawn_kwargs())
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip()
-                if line:
-                    self.log(line)
-            code = proc.wait()
+                code, out = self._run_logged(cmd + ["-U"])
+                if code != 0 and self._is_pip_install(out):
+                    self.log("This yt-dlp was installed with pip, which can't "
+                             "self-update. Retrying through pip…")
+                    python = self._interpreter_for(cmd[0])
+                    if python:
+                        code, _ = self._run_logged([python, "-m", "pip",
+                                                    "install", "-U", "yt-dlp"])
+                    else:
+                        self.log("ERROR: couldn't find the Python that owns "
+                                 f"{cmd[0]}.")
+                        self.log("  Update it yourself with:  pip install -U yt-dlp")
+
             if code == 0:
                 self.ytdlp_version = self._probe_version()
-                self.log(f"yt-dlp is now {self.ytdlp_version or '?'}.")
-                # Refresh the Settings readout if that window is still open.
+                now = self.ytdlp_version or "?"
+                self.log(f"yt-dlp is now {now}."
+                         + ("  (unchanged — it was already current)"
+                            if before and before == self.ytdlp_version else ""))
                 self.root.after(0, lambda: self.ytdlp_info_var.set(self._ytdlp_info_text()))
             else:
-                self.log(f"Update failed (exit {code}).")
+                self.log(f"ERROR: updating yt-dlp failed (exit {code}). See above.")
+                self.log("  Fix it by hand with:  pip install -U yt-dlp")
+                self.log("  Or delete the copy YEETingus is using and reopen the "
+                         "app — it will download its own.")
         except Exception as e:  # noqa: BLE001
             self.log(f"ERROR updating yt-dlp: {e}")
         finally:
@@ -1469,7 +1550,8 @@ class YeetApp:
             out, err = proc.communicate(timeout=120)
             self.active_proc = None
             if self._cancelled():
-                return {"id": "", "title": "", "channel": "", "heights": []}
+                return {"id": "", "title": "", "channel": "", "heights": [],
+                        "duration": None}
             proc = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
             if proc.returncode == 0 and (proc.stdout or "").strip():
                 data = json.loads(proc.stdout)
@@ -1478,6 +1560,8 @@ class YeetApp:
                     "title": data.get("title") or "",
                     "channel": data.get("channel") or data.get("uploader") or "",
                     "heights": _video_heights(data),
+                    # None for a livestream, and absent on some extractors.
+                    "duration": data.get("duration"),
                 }
             tail = (proc.stderr or "").strip().splitlines()
             self.log("Couldn't read video info; falling back to the URL id.")
@@ -1486,7 +1570,7 @@ class YeetApp:
         except Exception as e:  # noqa: BLE001
             self.log(f"Video info lookup failed: {e}")
         return {"id": naming.video_id_from_url(url), "title": "", "channel": "",
-                "heights": []}
+                "heights": [], "duration": None}
 
     def _probe_stream(self, path: str) -> dict | None:
         """First video stream's properties via ffprobe, or None."""
@@ -1581,6 +1665,122 @@ class YeetApp:
         """
         codec = (codec or "").lower()
         return codec.startswith(("vp0", "vp8", "vp9", "av0", "av1"))
+
+    def _looks_complete(self, path: str, meta: dict) -> bool:
+        """Whether an existing whole-video file actually holds the whole video.
+
+        The reuse check accepts any non-empty media file with the right name,
+        which is fine until a download dies partway: ffmpeg can leave a valid
+        but truncated .mp4 behind, and if cleanup couldn't delete it — Windows
+        won't unlink a file the dying ffmpeg still holds — every later attempt
+        reports "Already downloaded" and hands Resolve 40 seconds of a
+        10-minute video, forever.
+
+        So the file's own duration is compared against the video's. Anything
+        materially short is treated as unfinished. Unknown either way means we
+        can't judge, and the file is trusted rather than thrown away: a needless
+        re-download of a whole video is expensive.
+        """
+        wanted = meta.get("duration")
+        if not isinstance(wanted, (int, float)) or wanted <= 0:
+            return True
+        actual = self._stream_duration(path)
+        if actual is None:
+            # ffprobe couldn't read it at all, which a badly truncated file does.
+            self.log("  That file can't be read back; treating it as unfinished.")
+            return False
+        # 5% or two seconds of slack, whichever is larger: a container's own
+        # duration rarely matches the metadata to the frame.
+        if actual + max(2.0, wanted * 0.05) < wanted:
+            self.log(f"  It holds only {seconds_to_timestamp(round(actual))} of "
+                     f"{seconds_to_timestamp(round(wanted))} — unfinished.")
+            return False
+        return True
+
+    def _check_range(self, start: str | None, end: str | None,
+                     meta: dict) -> tuple[str | None, str | None] | None:
+        """Reconcile the requested section with the video's actual length.
+
+        Asking for a range past the end used to reach ffmpeg, which computed a
+        negative duration and emitted twenty lines of filter-graph noise ending
+        in "ffmpeg exited with code 4294967262" — plus a 0-byte .part file. None
+        of that says "your in point is after the end of the video".
+
+        Returns the (possibly trimmed) range, or None if there is nothing to
+        download. A whole-video request and an unknown duration both pass
+        straight through — livestreams report no duration, and there is nothing
+        to check against.
+        """
+        if start is None or end is None:
+            return start, end
+        duration = meta.get("duration")
+        if not isinstance(duration, (int, float)) or duration <= 0:
+            return start, end
+
+        length = seconds_to_timestamp(round(duration))
+        if to_seconds(start) >= duration:
+            self.log(f"ERROR: the in point ({start}) is past the end of this "
+                     f"video, which is {length} long.")
+            self.log("       Pick an in point inside the video and try again.")
+            return None
+
+        if to_seconds(end) > duration:
+            self.log(f"NOTE: the end point is past the end of this video "
+                     f"({length}); trimming the request to there.")
+            # Back through normalize_timestamp so the trimmed value is in the
+            # same HH:MM:SS form as the one the user typed — --download-sections
+            # takes a single "*start-end" string, and mixing "00:00:60.00" with
+            # "01:15" inside it is asking for a parsing surprise.
+            end = normalize_timestamp(seconds_to_timestamp(round(duration))) or end
+        return start, end
+
+    def _explain_403(self, got_bytes: bool, age_gated: bool) -> None:
+        """Say what a 403 actually means here, and what to do about it.
+
+        This used to read "403 means YouTube refused that format's URL. Try
+        'Best available', or hit 'Update yt-dlp'." — which buried the real cause
+        behind a suggestion that cannot help. Changing quality does nothing when
+        every format is refused, and an out-of-date yt-dlp is far and away the
+        common case: YouTube changes its signing regularly and a yt-dlp from
+        even a few weeks earlier stops being able to fetch anything.
+
+        The two shapes look different in the log and are worth telling apart:
+
+          * nothing downloaded at all — the URL was rejected outright. For a
+            clip that is usually ffmpeg fetching the byte range, since it can't
+            reproduce the headers those URLs are bound to.
+          * it got part-way, then 403 — reads like a dropped connection, but is
+            the same stale-extractor problem showing up mid-transfer.
+        """
+        version = self.ytdlp_version or "unknown"
+        if age_gated:
+            self.log("WHY: YouTube refused this video (403) because it is age "
+                     "restricted.")
+            self.log("     That needs a signed-in session, which YEETingus "
+                     "doesn't use. Nothing to fix.")
+            return
+
+        if got_bytes:
+            self.log("WHY: the download started, then YouTube refused the rest "
+                     "with 403.")
+            self.log("     That looks like a dropped connection but usually "
+                     "isn't — it's the same")
+            self.log("     out-of-date yt-dlp problem as an outright refusal.")
+        else:
+            self.log("WHY: YouTube refused the video URL outright (403). Not a "
+                     "resolution problem —")
+            self.log("     changing quality won't help, because every format is "
+                     "refused the same way.")
+
+        self.log(f"FIX: update yt-dlp. Yours is {version}, and YouTube breaks "
+                 "older ones regularly.")
+        self.log("     Settings -> Update yt-dlp, then try again.")
+        self.log("     (If the update itself fails, the log there says how to "
+                 "finish it by hand.)")
+        self.log("Still failing on a freshly updated yt-dlp? Age-restricted "
+                 "videos always 403 —")
+        self.log("  they need a signed-in session. Otherwise it's worth "
+                 "reporting.")
 
     def _stream_duration(self, path: str) -> float | None:
         """Container duration in seconds, for driving the re-encode progress bar."""
@@ -1726,6 +1926,13 @@ class YeetApp:
 
             max_height = self._resolve_quality(max_height, meta)
 
+            checked = self._check_range(start, end, meta)
+            if checked is None:
+                self._progress(0.0, "Nothing to download — see log")
+                self.reveal_log()
+                return
+            start, end = checked
+
             path = self._download(url, start, end, max_height, meta)
             if self._cancelled():
                 self._stopped()
@@ -1810,23 +2017,56 @@ class YeetApp:
         self._progress(0.0, "Stopped")
 
     def _cleanup_partial(self, folder: str, stem: str) -> None:
-        """Remove the fragments of a cancelled download."""
+        """Remove the fragments of a cancelled or failed download.
+
+        Retried, because the first attempt usually loses a race: yt-dlp has
+        exited but the ffmpeg it spawned still holds the output open for a
+        moment, and Windows refuses to unlink an open file. A single try left a
+        truncated .mp4 on disk — which for a whole video is worse than clutter,
+        since the reuse check would then hand that half-file to Resolve forever.
+        _looks_complete is the backstop for when this still fails.
+        """
         removed = 0
-        try:
-            for name in os.listdir(folder):
-                if name.startswith(stem + "."):
-                    try:
-                        os.remove(os.path.join(folder, name))
-                        removed += 1
-                    except OSError:
-                        pass  # locked by a dying ffmpeg; harmless leftover
-        except OSError:
-            return
+        stuck: list[str] = []
+        for attempt in range(4):
+            stuck = []
+            try:
+                names = [n for n in os.listdir(folder) if n.startswith(stem + ".")]
+            except OSError:
+                return
+            if not names:
+                break
+            for name in names:
+                try:
+                    os.remove(os.path.join(folder, name))
+                    removed += 1
+                except OSError:
+                    stuck.append(name)
+            if not stuck:
+                break
+            if attempt < 3:
+                time.sleep(0.5)     # let the dying ffmpeg release its handle
+
         if removed:
             self.log(f"Cleaned up {removed} partial file(s).")
+        for name in stuck:
+            self.log(f"! couldn't delete {name} — something still has it open.")
+            self.log("  Delete it by hand if the next attempt reuses it.")
 
     def _download(self, url, start, end, max_height, meta: dict) -> str | None:
-        os.makedirs(self.download_dir, exist_ok=True)
+        # Checked explicitly, because the bare OSError from makedirs surfaces as
+        # "[WinError 3] The system cannot find the path specified: 'Q:\\'" with
+        # nothing to say it is the clips folder. The realistic cause is a clip
+        # folder on a drive that isn't mounted right now.
+        try:
+            os.makedirs(self.download_dir, exist_ok=True)
+        except OSError as e:
+            self.log(f"ERROR: can't use the clips folder — {e}")
+            self.log(f"       {self.download_dir}")
+            self.log("       If that's on a removable drive, reconnect it; "
+                     "otherwise pick another")
+            self.log("       folder in Settings.")
+            return None
         video_id = meta.get("id") or "unknown-id"
 
         # "<ID> - <title> - <channel>", sanitised for any OS.
@@ -1839,6 +2079,17 @@ class YeetApp:
             # One fixed name per video, so a repeat request can reuse it.
             stem = naming.full_stem(video_id, channel)
             existing = self._existing_download(job_dir, stem)
+            if existing and not self._looks_complete(existing, meta):
+                # Left by an interrupted attempt. Removed rather than resumed:
+                # yt-dlp has no idea it's there, and leaving it would mean
+                # reusing it again on the next run.
+                self.log("  Downloading it again.")
+                try:
+                    os.remove(existing)
+                except OSError as e:
+                    self.log(f"! couldn't remove it ({e}); delete it by hand "
+                             "if this keeps happening.")
+                existing = None
             if existing:
                 self.log(f"Already downloaded — reusing {os.path.basename(existing)}")
                 described = self._describe_stream(self._probe_stream(existing))
@@ -1894,6 +2145,8 @@ class YeetApp:
         assert proc.stdout is not None
         saw_403 = False
         saw_no_js = False
+        saw_age_gate = False
+        got_bytes = False        # did any data actually arrive before it died?
         phase = "prepare"
         for line in proc.stdout:
             if self._cancelled():
@@ -1907,12 +2160,17 @@ class YeetApp:
                 saw_403 = True
             if "javascript runtime" in low:
                 saw_no_js = True
+            if "age" in low and ("confirm" in low or "sign in" in low
+                                 or "inappropriate" in low):
+                saw_age_gate = True
 
             # yt-dlp reports a percentage per stream; map it into the download
             # band so the bar tracks real progress instead of guessing.
             m = _PCT_RE.search(line)
             if m:
                 phase = "download"
+                if float(m.group(1)) > 0:
+                    got_bytes = True
                 pct = float(m.group(1)) / 100.0
                 self._progress(P_INFO + (P_DOWNLOAD - P_INFO) * pct,
                                f"Downloading… {m.group(1)}%")
@@ -1933,6 +2191,11 @@ class YeetApp:
             return None
 
         if proc.returncode != 0:
+            # Same cleanup as a cancellation. Without it a failed attempt leaves
+            # "<stem>.mp4.part" behind, and next_clip_stem counts that as taken —
+            # so every failure permanently burned a clip number and left junk in
+            # the folder. On a flaky connection that adds up fast.
+            self._cleanup_partial(job_dir, stem)
             self.log(f"yt-dlp exited with code {proc.returncode}.")
             if saw_no_js:
                 # The most likely cause of a YouTube failure now, and the one
@@ -1944,11 +2207,7 @@ class YeetApp:
                 self.log("      Check the JS line in Settings — see "
                          "https://github.com/yt-dlp/yt-dlp/wiki/EJS")
             if saw_403:
-                # A 403 here is YouTube rejecting a specific format URL, not a
-                # missing resolution — the usual cures are a newer yt-dlp or
-                # letting it pick the format.
-                self.log("HINT: 403 means YouTube refused that format's URL.")
-                self.log("      Try 'Best available', or hit 'Update yt-dlp'.")
+                self._explain_403(got_bytes, saw_age_gate)
             return None
 
         # Same rules as the reuse check: the merged mp4 if it's there, otherwise
@@ -1956,6 +2215,7 @@ class YeetApp:
         # fragment, which would be video-only or audio-only.
         produced = self._existing_download(job_dir, stem)
         if not produced:
+            self._cleanup_partial(job_dir, stem)
             self.log("yt-dlp finished but produced no usable file.")
             self.log("  (only per-stream fragments were found — the merge step "
                      "may have failed)")

@@ -5,6 +5,69 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [1.3.1] — 2026-08-16
+
+Reliability pass before three days of field use, plus the fix for the downloads
+that had stopped working entirely.
+
+### Changed
+
+- **Accented Latin characters in filenames are folded to ASCII.** `Zażółć gęślą
+  jaźń` becomes `Zazolc gesla jazn`, `Kraków` becomes `Krakow`. Two mechanisms,
+  because one isn't enough: NFKD strips combining accents, but `ł` has no
+  decomposition — it's a distinct letter, not l-with-a-mark — so it needs an
+  explicit table, alongside `ø`, `đ`, `æ`, `ß` and friends. Non-Latin scripts are
+  untouched, since there is no sensible ASCII to fold 日本語 to.
+- **403 errors now explain themselves.** The old hint was *"403 means YouTube
+  refused that format's URL. Try 'Best available', or hit 'Update yt-dlp'."* —
+  which led with advice that cannot help, since changing quality does nothing
+  when every format is refused. An out-of-date yt-dlp is overwhelmingly the
+  cause, so that comes first, with the installed version quoted. The two shapes
+  are told apart: refused outright (a clip, where ffmpeg fetches the byte range
+  and can't reproduce the headers the URL is bound to) versus stopping part-way
+  through (a whole video, which reads like a dropped connection but isn't).
+  Age-restricted videos are identified separately, since no update fixes those.
+
+### Fixed
+
+- **"Update yt-dlp" dead-ended when yt-dlp came from pip.** A pip *console
+  script* is indistinguishable from a standalone binary here — same single path,
+  same name — but it refuses `-U` with *"You installed yt-dlp with pip… Use that
+  to update"* and exit 100. The button reported the exit code and stopped, so the
+  one remedy the app offers for a stale yt-dlp did nothing. It now recognises
+  that refusal and retries through pip, using the interpreter next to the script
+  rather than `sys.executable` — which in a frozen build is YEETingus itself, and
+  would have relaunched the app instead of upgrading anything.
+- **Non-ASCII output from yt-dlp and ffmpeg was mangled in the log.** Both write
+  UTF-8 regardless of the console codepage, but the app decoded with the locale,
+  so a Polish title logged as `WiedÅºmin 3 … PieÅ›ni przeszÅ‚oÅ›ci`. Files were
+  never affected — yt-dlp escapes non-ASCII in the JSON the metadata probe reads,
+  so folder names were always correct — but it made real errors hard to read.
+- **A truncated whole video was reused forever as if complete.** If a download
+  died partway, ffmpeg could leave a valid-but-short `-full.mp4`, and the reuse
+  check accepted any non-empty file with the right name — so every later attempt
+  said "Already downloaded" and handed Resolve part of a video, with no way to
+  tell short of deleting the file by hand. The file's own duration is now checked
+  against the video's, and anything materially short is re-downloaded. Unknown
+  durations (livestreams) are trusted rather than re-fetched.
+- **Cleanup after a failed download didn't happen at all**, and when it did it
+  could lose a race. `_cleanup_partial` only ran on cancellation, so a failure
+  left `<stem>.mp4.part` behind — which `next_clip_stem` counts, permanently
+  burning that clip number. On a flaky connection the numbers marched upward and
+  the folder filled with junk. It now runs on failure too, and retries the delete,
+  because Windows won't unlink a file the dying ffmpeg still holds open.
+- **A section past the end of the video** produced twenty lines of ffmpeg
+  filter-graph errors ending in `ffmpeg exited with code 4294967262`, and a
+  0-byte file. The requested range is now checked against the video's duration
+  first: an in point past the end is refused in one sentence, and an end point
+  past it is quietly trimmed.
+- **A missing clips folder** reported `[WinError 3] The system cannot find the
+  path specified: 'Q:\'` with nothing to say it was the clips folder — the
+  realistic cause being a folder on a drive that isn't plugged in. It now names
+  the folder and says where to change it.
+
+---
+
 ## [1.3.0] — 2026-08-15
 
 Whole videos downloaded above 1080p were unusable in Resolve — dropped frames,

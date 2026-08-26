@@ -8,7 +8,7 @@
 
 Paste a link, set the in/out point, and press one button. No browser, full-video download, or manual importing.
 
-![version](https://img.shields.io/badge/version-1.3.0-edff00?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-1.3.1-edff00?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
@@ -56,7 +56,7 @@ Instead of downloading a whole video, trimming it, importing it and dragging it 
 - Files are placed in folders named `<video ID> - <title> - <channel>`.
 - Existing clips are never overwritten.
 - Whole videos are saved once and reused on later requests.
-- Filenames are cleaned up for Windows while keeping accented and non-Latin characters readable.
+- Filenames are cleaned up for Windows. Accented Latin text is folded to plain ASCII (`Zażółć` → `Zazolc`); other scripts such as 日本語 are left readable.
 
 ### Quality of life
 - Stop a download at any time.

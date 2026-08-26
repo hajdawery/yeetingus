@@ -5,10 +5,14 @@ Folder:  "<VIDEO ID> - <video title> - <channel name>"
 Clip:    "<videoid>-<ChannelName>-c001.mp4"  (numbered, never overwrites)
 Full:    "<videoid>-<ChannelName>-full.mp4"  (fixed name, so it can be reused)
 
-Sanitising rule: keep letters, digits, combining marks and a small punctuation
-whitelist; drop everything else. That preserves accented text (Zażółć, Kraków,
-日本語) while removing emoji, symbols, control characters and every byte Windows
-forbids in a path.
+Sanitising rule: fold accented Latin text down to ASCII, then keep letters,
+digits and a small punctuation whitelist and drop everything else. "Zażółć
+gęślą jaźń" becomes "Zazolc gesla jazn"; emoji, symbols, control characters and
+every byte Windows forbids in a path are removed.
+
+Non-Latin scripts are left alone (日本語 stays 日本語) — there is no meaningful
+ASCII to fold them to, and mangling them into nothing would leave a folder
+called "unnamed".
 """
 
 from __future__ import annotations
@@ -32,6 +36,46 @@ _RESERVED = {
 MAX_TITLE = 80
 MAX_CHANNEL = 40
 MAX_FOLDER = 130
+
+# Latin letters that carry no combining mark to strip, so NFKD leaves them
+# untouched and _fold_latin would otherwise keep them as-is. Polish ł is the one
+# that matters here; the rest are the usual European suspects, included so the
+# rule doesn't look arbitrary the next time a name comes through with a ø in it.
+_TRANSLIT = {
+    "ł": "l", "Ł": "L",
+    "đ": "d", "Đ": "D", "ð": "d", "Ð": "D",
+    "ø": "o", "Ø": "O",
+    "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE",
+    "ß": "ss", "ẞ": "SS",
+    "þ": "th", "Þ": "Th",
+    "ı": "i", "İ": "I",
+    "ŋ": "n", "Ŋ": "N",
+}
+
+
+def _fold_latin(text: str) -> str:
+    """Reduce accented Latin characters to ASCII, leaving other scripts alone.
+
+    Two mechanisms, because one isn't enough: NFKD splits é into "e" plus a
+    combining accent that we then drop, but ł has no decomposition at all — it
+    is a distinct letter, not l-with-a-mark — so it needs the explicit table
+    above. Getting this wrong is how "Zażółć" becomes "Zazoc".
+
+    A character whose folded form isn't pure ASCII is kept unchanged, which is
+    what leaves CJK, Cyrillic and Greek readable instead of deleting them.
+    """
+    out = []
+    for ch in text:
+        if ch in _TRANSLIT:
+            out.append(_TRANSLIT[ch])
+            continue
+        if ch.isascii():
+            out.append(ch)
+            continue
+        stripped = "".join(c for c in unicodedata.normalize("NFKD", ch)
+                           if not unicodedata.combining(c))
+        out.append(stripped if stripped and stripped.isascii() else ch)
+    return "".join(out)
 
 # Used when a title or channel consisted entirely of characters we strip — an
 # all-emoji title, say. Distinct from "unknown", which means we never had the
@@ -86,6 +130,8 @@ def safe_component(text: str, max_len: int = 80) -> str:
     # NFKC folds compatibility forms (ﬁ -> fi, fullwidth -> ASCII) so the
     # whitelist below sees canonical characters.
     text = unicodedata.normalize("NFKC", text)
+    # Then accented Latin down to plain ASCII: ż -> z, ł -> l, ó -> o.
+    text = _fold_latin(text)
 
     kept = []
     for ch in text:

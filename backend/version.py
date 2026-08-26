@@ -4,7 +4,7 @@ Consumed by the app (header, Settings, boot log) and by install.py, which bakes
 the version into the Lua launcher so Resolve's Console can report it.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 # Display name shown in the window title, header and Settings. The executable,
 # install folder and Resolve menu entry all derive from this name;
