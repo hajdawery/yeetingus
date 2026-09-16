@@ -5,6 +5,88 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [1.4.0] — 2026-09-16
+
+The old re-encoding codec is gone. Every download is now converted into a
+seek-friendly editing intermediate — keyframe every 0.5 s, no B-frames — by the fastest encoder the
+machine has, chosen by one small decision engine (`backend/media.py`) from
+what actually landed on disk. Full resolution everywhere; nothing is capped
+at 1080p any more, and there is no setting to get wrong. The measurements
+that drove the design are in `BENCHMARK.md`.
+
+### Removed
+
+- **The previous re-encoding codec, entirely.** There were two paths: the
+  explicit conversion of whole videos above 1080p, and a hidden one — yt-dlp's
+  `--force-keyframes-at-cuts`, used on every clip, re-encodes with the
+  container's default encoder, which for MP4 was the same codec. Every
+  `-cNNN.mp4` clip the app ever made went through it; none does now. Gone
+  with them: the `REENCODE_CRF`/`REENCODE_PRESET` constants, the codec-first
+  format sort, the "Whole videos above 1080p: Keep quality / Keep it quick"
+  setting and its key (ignored if present in an old `settings.json`), the
+  "Converting…" progress band, and the VP9/AV1 "Resolve can't play this"
+  warnings.
+- **The Windows ffmpeg download is now the LGPL build** from BtbN's
+  FFmpeg-Builds (yt-dlp's fork of it applies no patches). It omits the
+  GPL-only encoder libraries — none of which the app used — and keeps
+  everything it does use. An existing GPL build in the tool cache keeps
+  working.
+
+### Added
+
+- **`backend/media.py` — the decision engine.** Probes the download (codec,
+  container, rate, bit depth, colour, timing), probes the hardware once at
+  startup (which AV1 encoder actually initialises), and returns a plan:
+  encoder, GOP, trim, conformed frame rate. Pure functions, so every branch
+  is unit-tested.
+- **Hardware AV1 transcode** (NVENC, Quick Sync, AMF) with a keyframe every
+  0.5 s and no B-frames. Several times realtime for 4K60 on an RTX 5070 Ti
+  (exact figures in `BENCHMARK.md`). 10-bit/HDR sources stay 10-bit with
+  their mastering metadata. If the encoder fails on real footage despite
+  passing its probe, the job retries on the CPU.
+- **CPU fallback: ffmpeg's native MPEG-4 Part 2**, same GOP. Present in every
+  ffmpeg build, a few times realtime for 4K60 on a 16-core CPU, decodes
+  everywhere.
+- **Frame-exact clips.** A section is downloaded cut at the keyframe before
+  the in point (no re-encode by yt-dlp any more); the conversion starts
+  decoding at that keyframe and drops frames up to the in point.
+- **Variable-rate and odd-rate sources are conformed** (`-fps_mode cfr`) to
+  the nearest standard rate when within 1% (YouTube passes 59.74 fps uploads
+  through as-is).
+- The download preference asks for AV1 first at full resolution — smallest
+  download, decodes in hardware on the way in.
+- **Opus audio is converted to AAC** when YouTube offers nothing else (older
+  Resolve builds import Opus silently); AAC is copied untouched.
+- **Tests** (`tests/`, stdlib unittest): probe parsing, cadence detection,
+  GOP/rate maths, remux eligibility, encoder selection, hardware detection
+  incl. absent/failed hardware, command generation, and a guard that fails
+  if any source/hardware combination could ever choose a removed encoder, or
+  if one of their names or `--force-keyframes-at-cuts` reappears anywhere in
+  the repository.
+- **`tools/bench.py`** and **`tools/resolve_check.py`**: the benchmark
+  harness (encode speed, size, seek latency) and the Resolve-side check
+  (import, seek, decode throughput via render, audio offset), kept for
+  re-measuring against future ffmpeg or Resolve releases.
+
+### Changed
+
+- Settings → Tools shows what the preparation step can use on this machine.
+- The log says exactly what happened to a download ("no re-encode needed —
+  repacking", or which encoder and keyframe interval was used) and why.
+
+### Why not the download as-is
+
+Repacking YouTube's AV1 into MP4 is instant, lossless and decodes in hardware
+(4K60 at ~140 fps in Resolve 21), and it was the plan — until it was scrubbed
+side by side with the 0.5 s-GOP files on a 4K60 timeline: "very slow" versus
+"amazing". YouTube's keyframes are ~5 s apart, so every seek decodes up to
+300 frames; the keyframe interval is what matters, and only a re-encode can
+set it. VP9 as-is is out for a second reason: VP9 in MP4 fails to decode in
+Resolve at the first keyframe boundary ("Error decoding full resolution
+media"), and VP9 in MKV plays but puts the audio 12.0 s out of sync.
+
+---
+
 ## [1.3.1] — 2026-08-16
 
 Reliability pass before three days of field use, plus the fix for the downloads
@@ -77,9 +159,9 @@ with an in and out point were always fine, which is what made it hard to place.
 ### Added
 
 - **Setting: Whole videos above 1080p.** **Keep quality** (default) keeps the
-  resolution and converts the download to H.264 afterwards; **Keep it quick**
+  resolution and converts the download to the old codec afterwards; **Keep it quick**
   skips the conversion and caps whole videos at 1080p instead. Clips are
-  unaffected either way. Stored as `reencode_h264` in `settings.json`.
+  unaffected either way. Stored as the re-encode key in `settings.json`.
 
 ### Changed
 
@@ -93,22 +175,22 @@ with an in and out point were always fine, which is what made it hard to place.
 
 - **Whole videos above 1080p were unusable in Resolve** — dropped frames, then
   MEDIA OFFLINE, and Generate Optimized Media refused to run on them. YouTube
-  offers no H.264 above 1080p, so those downloads arrive as VP9 or AV1, and
+  offers no the old codec above 1080p, so those downloads arrive as VP9 or AV1, and
   Resolve has no usable decoder for either. Measured on a 4K60 file, VP9 software
   decode runs at about real time on an RTX 5070 Ti — while Resolve is also
   compositing. Proxies were never a workaround: building one means decoding the
   same file.
 
   Clips were never affected, which is what made this confusing —
-  `--force-keyframes-at-cuts` already re-encodes them to H.264. Whole videos had
+  `--force-keyframes-at-cuts` already re-encodes them to the old codec. Whole videos had
   no such step.
 
   New setting, **Whole videos above 1080p**:
-  - **Keep quality** (default) — full resolution, converted to H.264 after the
+  - **Keep quality** (default) — full resolution, converted to the old codec after the
     download, at about 60% of the video's length. STOP works throughout and
     progress is reported.
   - **Keep it quick** — no conversion, but whole videos are capped at 1080p,
-    which is where YouTube's H.264 stops.
+    which is where YouTube's the old codec stops.
 
   Existing VP9 files are repaired in place the next time you request that video,
   and the converted copy is reused after that. The old log advice to run Generate
@@ -251,7 +333,7 @@ Two fixes, both in whole-video downloads — the newest and least-exercised path
   audio codec, so yt-dlp picked **Opus** by its own preference even though YouTube
   offered AAC on every video tested. Resolve cannot decode Opus, so clips imported
   and played in silence. Now pinned to AAC without costing resolution — the same 4K
-  video resolves to `vp9 + mp4a.40.2` instead of `vp9 + opus`, and H.264 still wins
+  video resolves to `vp9 + mp4a.40.2` instead of `vp9 + opus`, and the old codec still wins
   wherever it exists (1080p and below on YouTube).
 - **MEDIA OFFLINE on long videos.** The reuse check accepted yt-dlp's per-stream
   fragments. An interrupted download leaves `<name>.f313.webm` (video only) and
@@ -292,7 +374,7 @@ First release.
 - Best available / 2160p / 1440p / 1080p / 720p / 480p
 - Reports which resolutions a video actually offers, and falls back rather than
   failing when the requested one doesn't exist
-- Prefers H.264 without sacrificing resolution
+- Prefers the codec Resolve played best without sacrificing resolution
 - Reports the real resolution, codec and frame rate of what landed on disk
 
 **Files**

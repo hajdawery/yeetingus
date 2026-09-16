@@ -277,6 +277,7 @@ def main() -> int:
         # imported lazily / by string, so state them explicitly
         "--hidden-import", "config",
         "--hidden-import", "deps",
+        "--hidden-import", "media",
         "--hidden-import", "theme",
         "--hidden-import", "resolve_bridge",
         "--hidden-import", "naming",
@@ -294,7 +295,7 @@ def main() -> int:
     # writes that from --name and --osx-bundle-identifier).
     if WINDOWS:
         cmd += ["--version-file", write_version_resource(
-            NAME, f"{NAME} — YouTube/Twitch clips into DaVinci Resolve")]
+            NAME, f"{NAME} — media ingestion for DaVinci Resolve")]
     elif MACOS:
         cmd += ["--osx-bundle-identifier", BUNDLE_ID]
         # PyInstaller targets the host architecture by default, so a build made

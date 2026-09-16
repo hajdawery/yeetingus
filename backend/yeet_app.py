@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-YEETingus — pull a time-ranged fragment of a YouTube video with yt-dlp and paste it
-straight onto the current DaVinci Resolve timeline.
+YEETingus — media ingestion for video editors: pull a time-ranged fragment of a
+video you have the right to use (your own uploads, openly licensed material,
+promotional media for creator/press/editorial use), prepare it for editing, and
+paste it straight onto the current DaVinci Resolve timeline.
 
 Run from source (needs Python 3.6-3.13 — Resolve's fusionscript library is a C
 extension that CRASHES on 3.14+; see resolve_bridge.MAX_PY):
@@ -32,21 +34,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config                    # noqa: E402
 import deps                      # noqa: E402
+import media                     # noqa: E402
 import naming                    # noqa: E402
 import resolve_bridge            # noqa: E402
 import theme as T                # noqa: E402
 from version import APP_NAME, AUTHOR_URL, COPYRIGHT, __version__  # noqa: E402
 
 # Progress is split into bands so the bar moves through the whole job, not just
-# the download: info lookup, download, then the Resolve insert.
-# Progress-bar milestones. P_CONVERT is only reached when a whole video needs
-# re-encoding to H.264; without that step the bar goes straight from P_DOWNLOAD
-# to P_INSERT.
-P_INFO, P_DOWNLOAD, P_CONVERT, P_INSERT = 0.06, 0.70, 0.94, 0.97
+# the download: info lookup, download, the preparation pass (the conversion in
+# media.py), then the Resolve insert.
+P_INFO, P_DOWNLOAD, P_PREPARE, P_INSERT = 0.06, 0.70, 0.94, 0.97
 
 _PCT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 
-# ffmpeg -progress output, for the re-encode pass: "out_time_us=12345678".
+# ffmpeg -progress output, for the preparation pass: "out_time_us=12345678".
 _FFMPEG_TIME_RE = re.compile(r"^out_time_us=(\d+)", re.MULTILINE)
 
 # Width of the log panel docked to the right; the window grows by this when the
@@ -82,9 +83,8 @@ def _spawn_kwargs() -> dict:
     return kwargs
 
 
-# yt-dlp's post-download stages. --force-keyframes-at-cuts re-encodes around the
-# cut points, so this can take a while and deserves its own label rather than
-# sitting at "Downloading... 100%".
+# yt-dlp's post-download stages (merging the video and audio streams), which
+# deserve their own label rather than sitting at "Downloading... 100%".
 _POST_MARKERS = ("[merger]", "[videoconvertor]", "[videoremuxer]", "[fixup",
                  "[extractaudio]", "[postprocess", "[splitchapters]")
 
@@ -164,37 +164,25 @@ def _video_heights(data: dict) -> list[int]:
     return sorted((h for h in heights if isinstance(h, int)), reverse=True)
 
 
-# Prefer H.264 *without* sacrificing resolution: sort by resolution first, then
-# by codec. A fallback chain like "avc1 else anything" would silently cap "Best
-# available" at 1080p, since that's as high as YouTube's H.264 goes.
+# Resolution first, then AV1 as the tiebreaker. Every download is converted
+# anyway (media.py explains why), so the codec only affects the download: AV1
+# is YouTube's smallest stream at any resolution, and both AV1 and VP9 decode
+# in hardware on the way in. Resolution is never capped.
 #
-# Why bother: H.264 hardware-decodes and scrubs well in Resolve, VP9 less so and
-# AV1 poorly. YouTube also serves AV1 inside .mp4, so "ext=mp4" alone doesn't
-# guarantee H.264.
-#
-# acodec:aac is not optional. Resolve cannot decode Opus at all — a clip with an
-# Opus track imports and plays with silence. Without naming an audio codec here
-# yt-dlp picks Opus by preference even when YouTube also offers AAC, which it
-# almost always does.
-FORMAT_SORT = "res,vcodec:h264,acodec:aac"
-
-# The other way round: codec first, so H.264 wins even when that costs
-# resolution. Used for a whole-video download when the user has turned the
-# re-encode off — the point is then to avoid ever receiving VP9/AV1, which caps
-# the result at 1080p because that is as high as YouTube's H.264 goes.
-FORMAT_SORT_H264_FIRST = "vcodec:h264,res,acodec:aac"
-
-# Re-encode settings for _to_h264. CRF 20 is visually transparent for editing
-# footage. The preset is "medium" rather than something faster because decoding
-# the VP9 source dominates the run: measured on a 4K60 clip, "fast" saved 7% of
-# the time and cost 14% more file size, so the slower preset is the better trade.
-REENCODE_CRF = "20"
-REENCODE_PRESET = "medium"
+# acodec:aac is not optional. Older Resolve builds import Opus silently, and
+# without naming an audio codec yt-dlp picks Opus by preference even when
+# YouTube also offers AAC, which it almost always does. When Opus does arrive
+# it is converted to AAC (media.COPYABLE_AUDIO).
+FORMAT_SORT = "res,vcodec:av01,acodec:aac"
 
 # yt-dlp's intermediate per-stream files, e.g. "<stem>.f313.webm" (video only) and
 # "<stem>.f140.m4a" (audio only), which it merges and then deletes. An interrupted
 # download leaves them behind, and handing one to Resolve gives MEDIA OFFLINE.
 _FRAGMENT_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
+
+# What yt-dlp writes, before the preparation pass turns it into "<stem>.mp4".
+# Deleted once that succeeds; never handed to Resolve.
+SOURCE_TAG = ".src"
 
 # Containers a finished download can legitimately arrive in.
 MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
@@ -285,12 +273,14 @@ class YeetApp:
         self.settings = config.load()
         self.download_dir = self.settings["download_dir"]
         self.default_length = self.settings["default_length"]
-        self.reencode_h264 = self.settings["reencode_h264"]
+        # Hardware AV1 support, probed once ffmpeg is known (see _boot).
+        self.caps: media.Capabilities | None = None
         # "Update yt-dlp" lives in the Settings window, which may be closed while
         # an update is still running — hence the nullable reference.
         self.update_btn: T.RoundButton | None = None
         self.ytdlp_info_var = tk.StringVar(value="checking…")
         self.ffmpeg_info_var = tk.StringVar(value="checking…")
+        self.caps_info_var = tk.StringVar(value="checking…")
         self.js_info_var = tk.StringVar(value="checking…")
         # Settings-window buttons; None whenever that window isn't open.
         self.ffmpeg_btn = None
@@ -707,6 +697,7 @@ class YeetApp:
             self.ffmpeg_path = deps.install_ffmpeg_via_brew(self.log)
             self.root.after(0, lambda: self.ffmpeg_info_var.set(self.ffmpeg_path or ""))
             self.log("ffmpeg is ready — no restart needed.")
+            self._probe_hardware()
             # The boot sequence gives up on a missing ffmpeg and leaves the
             # action buttons disabled; now that it's here, let them back in.
             if self.ytdlp_cmd:
@@ -1030,41 +1021,14 @@ class YeetApp:
         T.Segmented(db, [(str(s), f"{s}s") for s in config.LENGTH_CHOICES],
                     length_var).pack(fill="x", pady=(T.px(9), 0))
 
-        # Whole-video codec ---------------------------------------------------- #
-        codec_card = T.Card(body)
-        codec_card.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
-        cb = codec_card.body
-        T.step_header(cb, 3, "Whole videos above 1080p").pack(
-            anchor="w", pady=(0, T.px(16)))
-        T.field_label(
-            cb, "YouTube only has H.264 up to 1080p — above that it's VP9/AV1, "
-                "which Resolve can't play").pack(anchor="w")
-        reencode_var = tk.StringVar(value="1" if self.reencode_h264 else "0")
-        T.Segmented(cb, [("1", "Keep quality"), ("0", "Keep it quick")],
-                    reencode_var).pack(fill="x", pady=(T.px(9), T.px(9)))
-        hint = tk.Label(cb, bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9),
-                        justify="left", anchor="w", wraplength=T.px(520))
-        hint.pack(fill="x")
-
-        def _codec_hint(*_a) -> None:
-            hint.configure(text=(
-                "Full resolution, converted to H.264 afterwards. Adds roughly "
-                "60% of the video's length to the job — a 10-minute video takes "
-                "about 6 extra minutes. STOP still works."
-                if reencode_var.get() == "1" else
-                "No waiting, but whole videos are capped at 1080p, because that "
-                "is the highest resolution YouTube offers in H.264. Clips with an "
-                "in/out point are unaffected and stay full resolution."))
-        _codec_hint()
-        reencode_var.trace_add("write", _codec_hint)
-
         info = T.Card(body)
         info.pack(fill="x", padx=T.px(26), pady=(0, T.px(16)))
         ib = info.body
-        T.step_header(ib, 4, "Tools").pack(anchor="w", pady=(0, 14))
+        T.step_header(ib, 3, "Tools").pack(anchor="w", pady=(0, 14))
         # Live vars so an update performed from this window refreshes in place.
         self.ytdlp_info_var.set(self._ytdlp_info_text())
         self.ffmpeg_info_var.set(self.ffmpeg_path or "not found")
+        self.caps_info_var.set(self.caps.describe() if self.caps else "not checked")
         # Only when there's a runtime to describe: otherwise the var already
         # holds the reason from startup ("not found" / "yt-dlp too old"), which
         # is more use than recomputing "not found" here.
@@ -1072,6 +1036,7 @@ class YeetApp:
             self.js_info_var.set(self._js_info_text())
         for label, var in (("yt-dlp", self.ytdlp_info_var),
                            ("ffmpeg", self.ffmpeg_info_var),
+                           ("video", self.caps_info_var),
                            ("JS", self.js_info_var)):
             line = tk.Frame(ib, bg=T.CARD)
             line.pack(fill="x", pady=2)
@@ -1176,18 +1141,11 @@ class YeetApp:
             self.settings["default_length"] = length
             self.default_length = length
 
-            reencode = reencode_var.get() == "1"
-            self.settings["reencode_h264"] = reencode
-            self.reencode_h264 = reencode
-
             try:
                 path = config.save(self.settings)
                 self.log(f"Clips → {new_dir}")
                 self.log(f"Default clip length → {seconds_to_timestamp(length)} "
                          "(applied when the app opens)")
-                self.log("Whole videos above 1080p → " + (
-                    "full resolution, converted to H.264" if reencode else
-                    "capped at 1080p H.264, no conversion"))
                 self.log(f"Settings saved to {path}")
             except OSError as e:
                 self.log(f"ERROR saving settings: {e}")
@@ -1246,6 +1204,7 @@ class YeetApp:
             return
 
         self.ytdlp_version = self._probe_version()
+        self._probe_hardware()
         # After yt-dlp, because it asks yt-dlp which flags it understands, and
         # non-fatal by design — see _setup_js_runtime.
         self._setup_js_runtime()
@@ -1258,6 +1217,23 @@ class YeetApp:
         # Both action buttons start disabled until the tools are resolved; go
         # through _set_busy(False) so neither is forgotten.
         self.root.after(0, lambda: self._set_busy(False))
+
+    def _probe_hardware(self) -> None:
+        """Find out what the preparation pass can use on this machine.
+
+        A second or so of tiny test encodes/decodes; done once at startup and
+        after an ffmpeg install. Never fatal — with nothing found, everything
+        still works through the CPU path.
+        """
+        if not self.ffmpeg_path:
+            return
+        try:
+            self.caps = media.probe_capabilities(self.ffmpeg_path)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"Hardware check failed ({e}); using the CPU path.")
+            self.caps = media.Capabilities()
+        self.log(f"Video: {self.caps.describe()}")
+        self.root.after(0, lambda: self.caps_info_var.set(self.caps.describe()))
 
     def _probe_version(self) -> str | None:
         try:
@@ -1572,59 +1548,24 @@ class YeetApp:
         return {"id": naming.video_id_from_url(url), "title": "", "channel": "",
                 "heights": [], "duration": None}
 
-    def _probe_stream(self, path: str) -> dict | None:
-        """First video stream's properties via ffprobe, or None."""
+    def _probe_media(self, path: str) -> media.SourceInfo | None:
+        """What is actually on disk (codec, size, rate, timing), or None."""
         ffprobe = deps.find_ffprobe()
         if not ffprobe:
             return None
-        cmd = [ffprobe, "-v", "error", "-select_streams", "v:0",
-               "-show_entries", "stream=codec_name,width,height,r_frame_rate",
-               "-of", "json", path]
         try:
-            proc = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                timeout=30, **_spawn_kwargs())
-            if proc.returncode != 0:
-                return None
-            streams = (json.loads(proc.stdout) or {}).get("streams") or []
-            return streams[0] if streams else None
+            return media.probe(ffprobe, path)
         except Exception:  # noqa: BLE001 — a missing detail isn't worth failing over
             return None
 
     @staticmethod
-    def _describe_stream(s: dict | None) -> str | None:
-        """Human-readable resolution/codec/fps.
-
-        Describes what actually landed on disk rather than what was requested —
-        after codec and resolution fallbacks those can differ.
-        """
-        if not s:
-            return None
-        w, h = s.get("width"), s.get("height")
-        if not (w and h):
-            return None
-
-        codec = str(s.get("codec_name") or "?")
-        label = f"{h}p ({w}x{h}, {codec}"
-        # r_frame_rate is a rational like "30000/1001".
-        rate = str(s.get("r_frame_rate") or "")
-        if "/" in rate:
-            num, den = rate.split("/", 1)
-            try:
-                fps = float(num) / float(den)
-            except (ValueError, ZeroDivisionError):
-                fps = 0.0
-            if fps > 0:
-                label += f", {fps:.2f}".rstrip("0").rstrip(".") + " fps"
-        return label + ")"
-
-    @staticmethod
-    def _existing_download(folder: str, stem: str) -> str | None:
+    def _existing_download(folder: str, stem: str, raw: bool = False) -> str | None:
         """A finished download for `stem`, or None.
 
         Skips yt-dlp's scratch files and zero-byte remnants, so an interrupted
         attempt is never mistaken for a complete one — that would insert a broken
-        file instead of re-downloading.
+        file instead of re-downloading. The raw "<stem>.src.*" download is
+        skipped too unless `raw` is set, which is how _download finds it.
         """
         try:
             names = os.listdir(folder)
@@ -1638,7 +1579,8 @@ class YeetApp:
                 continue
             # A leftover per-stream fragment is video-only or audio-only; treating
             # one as a finished download is what put MEDIA OFFLINE on the timeline.
-            if _FRAGMENT_RE.search(name):
+            # The raw download (".src.") is likewise not the finished file.
+            if _FRAGMENT_RE.search(name) or (not raw and (SOURCE_TAG + ".") in name):
                 continue
             if not name.lower().endswith(MEDIA_EXTS):
                 continue
@@ -1649,22 +1591,6 @@ class YeetApp:
             except OSError:
                 continue
         return None
-
-    @staticmethod
-    def _scrubs_poorly(codec: str) -> bool:
-        """Whether Resolve will struggle to decode `codec`.
-
-        "Slowly" undersells it. Measured on a 4K60 VP9 file, software decode runs
-        at about real time on an RTX 5070 Ti — and Resolve is doing that while
-        also compositing, so playback drops frames and the clip eventually reads
-        MEDIA OFFLINE. Generate Optimized Media doesn't rescue it either, because
-        building the proxy means decoding the same file.
-
-        YouTube only offers H.264 up to 1080p, so anything above that is
-        necessarily one of these. H.264 hardware-decodes and is fine.
-        """
-        codec = (codec or "").lower()
-        return codec.startswith(("vp0", "vp8", "vp9", "av0", "av1"))
 
     def _looks_complete(self, path: str, meta: dict) -> bool:
         """Whether an existing whole-video file actually holds the whole video.
@@ -1782,8 +1708,98 @@ class YeetApp:
         self.log("  they need a signed-in session. Otherwise it's worth "
                  "reporting.")
 
+    def _prepare(self, raw: str, section: media.Section | None) -> str | None:
+        """Turn the raw download into the file Resolve gets (media.py decides
+        how). Returns the finished path, or None on failure or cancellation.
+
+        A file that is already the finished "<stem>.mp4" — a reused whole video,
+        including one made by an older version — passes straight through.
+        """
+        if (SOURCE_TAG + ".") not in os.path.basename(raw):
+            return raw
+
+        ffmpeg = self.ffmpeg_path or deps.find_ffmpeg()
+        info = self._probe_media(raw)
+        if not ffmpeg or info is None:
+            self.log("ERROR: can't read the download back; nothing to prepare.")
+            return None
+        if self.caps is None:
+            self._probe_hardware()
+        caps = self.caps or media.Capabilities()
+
+        plan = media.plan(info, caps, section)
+        media.assert_allowed_encoder(plan)
+        out = media.output_path_for(raw.replace(SOURCE_TAG + ".", "."), plan)
+        tmp = f"{os.path.splitext(out)[0]}.tmp.{plan.container}"
+        cmd = media.build_command(ffmpeg, info, plan, tmp)
+
+        self.log(f"Downloaded: {info.describe()}")
+        self.log(f"Preparing: converting with {plan.encoder} "
+                 f"(keyframe every {plan.gop} frames) so Resolve scrubs it well.")
+        estimate = media.estimate_seconds(info, plan, section)
+        rough = "a few seconds" if estimate < 15 else (
+            "under a minute" if estimate < 60 else f"around {estimate / 60:.0f} min")
+        self.log(f"  Expect {rough}. STOP still works.")
+        for note in plan.notes:
+            self.log(f"  {note}")
+
+        # The span the progress bar counts down: the section, or the whole file.
+        total = info.duration
+        if section and section.end is not None:
+            total = section.end - section.start
+        self._progress(P_DOWNLOAD, "Preparing…")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, bufsize=1, **_spawn_kwargs())
+        self.active_proc = proc
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if self._cancelled():
+                break
+            m = _FFMPEG_TIME_RE.match(line)
+            if m and total > 0:
+                done = min(int(m.group(1)) / 1_000_000 / total, 1.0)
+                self._progress(P_DOWNLOAD + (P_PREPARE - P_DOWNLOAD) * done,
+                               f"Preparing… {done * 100:.0f}%")
+        _, err = proc.communicate()
+        self.active_proc = None
+
+        if self._cancelled() or proc.returncode != 0:
+            if proc.returncode != 0 and not self._cancelled():
+                self.log(f"Preparation failed (exit {proc.returncode}).")
+                for l in (err or "").strip().splitlines()[-4:]:
+                    self.log(f"  {l}")
+                if plan.hardware:
+                    # A hardware encoder that passed its probe can still fail on
+                    # real footage (driver limits, odd dimensions). Retry on CPU
+                    # rather than leave the user with nothing.
+                    self.log("  Retrying with the CPU encoder…")
+                    self.caps = media.Capabilities(av1_encoder=None)
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                    return self._prepare(raw, section)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return None
+
+        try:
+            os.replace(tmp, out)
+        except OSError as e:
+            self.log(f"Prepared fine but couldn't move the result into place: {e}")
+            return None
+        try:
+            os.remove(raw)
+        except OSError:
+            self.log(f"  (couldn't delete the raw download {os.path.basename(raw)})")
+
+        self._progress(P_PREPARE, "Prepared")
+        return out
+
     def _stream_duration(self, path: str) -> float | None:
-        """Container duration in seconds, for driving the re-encode progress bar."""
+        """Container duration in seconds, for the reuse completeness check."""
         ffprobe = deps.find_ffprobe()
         if not ffprobe:
             return None
@@ -1796,98 +1812,6 @@ class YeetApp:
             return float((proc.stdout or "").strip())
         except Exception:  # noqa: BLE001 — no duration just means a vaguer bar
             return None
-
-    def _to_h264(self, path: str) -> str | None:
-        """Re-encode `path` to H.264 in place, returning the new path.
-
-        Only ever called for a whole-video download that came back VP9 or AV1,
-        which happens above 1080p because YouTube offers nothing else up there.
-        Resolve has no usable decoder for either: playback drops frames, and the
-        clip eventually goes MEDIA OFFLINE. Generate Optimized Media is no escape
-        — it has to decode the file too, and fails for the same reason.
-
-        Sections never need this; --force-keyframes-at-cuts already re-encodes
-        them, which is why clips worked when full videos didn't.
-
-        Audio is copied rather than re-encoded: FORMAT_SORT already pinned it to
-        AAC, and a second lossy pass over it would be loss for nothing.
-
-        Returns None on failure or cancellation, leaving the original untouched —
-        a VP9 file that plays badly still beats no file at all.
-        """
-        ffmpeg = self.ffmpeg_path or deps.find_ffmpeg()
-        if not ffmpeg:
-            self.log("Can't re-encode: ffmpeg wasn't found. Keeping the original.")
-            return None
-
-        duration = self._stream_duration(path)
-        stem, ext = os.path.splitext(path)
-        # A distinct name, so an interrupted pass can never be mistaken for the
-        # finished file: only a clean exit gets to replace the original.
-        tmp = f"{stem}.h264-tmp{ext}"
-
-        self.log("Converting to H.264 so Resolve can actually play it…")
-        if duration:
-            # 0.6x realtime, measured on 4K60 VP9. Rounded up and never phrased
-            # as "0 min", which is what a short clip used to report.
-            estimate = duration * 0.6
-            rough = ("under a minute" if estimate < 60
-                     else f"around {estimate / 60:.0f} min")
-            self.log(f"  {seconds_to_timestamp(round(duration))} of video — expect "
-                     f"{rough}. STOP still works.")
-
-        cmd = [
-            ffmpeg, "-y", "-nostdin",
-            "-i", path,
-            "-c:v", "libx264", "-preset", REENCODE_PRESET, "-crf", REENCODE_CRF,
-            "-pix_fmt", "yuv420p",       # Resolve wants 8-bit 4:2:0
-            "-movflags", "+faststart",   # index up front, so import is instant
-            "-c:a", "copy",
-            "-progress", "pipe:1", "-nostats", "-loglevel", "error",
-            tmp,
-        ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                **_spawn_kwargs())
-        self.active_proc = proc
-        assert proc.stdout is not None
-        errors: list[str] = []
-        for line in proc.stdout:
-            if self._cancelled():
-                break
-            line = line.rstrip()
-            if not line:
-                continue
-            m = _FFMPEG_TIME_RE.match(line)
-            if m and duration:
-                done = int(m.group(1)) / 1_000_000 / duration
-                self._progress(P_DOWNLOAD + (P_CONVERT - P_DOWNLOAD) * min(done, 1.0),
-                               f"Converting to H.264… {min(done, 1.0) * 100:.0f}%")
-            elif not line.startswith(("frame=", "fps=", "bitrate=", "total_size=",
-                                      "out_time", "dup_frames=", "drop_frames=",
-                                      "speed=", "progress=", "stream_")):
-                errors.append(line)      # a real message, not progress bookkeeping
-                self.log(f"  {line}")
-        proc.wait()
-        self.active_proc = None
-
-        if self._cancelled() or proc.returncode != 0:
-            if proc.returncode != 0 and not self._cancelled():
-                self.log(f"Re-encode failed (exit {proc.returncode}); "
-                         "keeping the original file.")
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            return None
-
-        try:
-            os.replace(tmp, path)
-        except OSError as e:
-            self.log(f"Re-encoded fine but couldn't replace the original: {e}")
-            return None
-        self.log("  Converted. Re-running this video will reuse the H.264 copy.")
-        return path
 
     def _resolve_quality(self, max_height: int | None, meta: dict) -> int | None:
         """Reconcile the requested cap with what the video actually offers.
@@ -1933,29 +1857,29 @@ class YeetApp:
                 return
             start, end = checked
 
-            path = self._download(url, start, end, max_height, meta)
+            raw = self._download(url, start, end, max_height, meta)
             if self._cancelled():
                 self._stopped()
                 return
-            if not path:
+            if not raw:
                 self._progress(0.0, "Failed — see log")
                 self.reveal_log()
                 return
 
-            # Whole videos above 1080p arrive as VP9 or AV1, which Resolve can't
-            # usefully decode. Done here rather than inside _download so the
-            # reuse path gets it too: a file fetched by an older version, or by a
-            # run with this setting off, is repaired the next time it's used.
-            whole = start is None or end is None
-            if whole and self.reencode_h264:
-                codec = ((self._probe_stream(path) or {}).get("codec_name") or "")
-                if self._scrubs_poorly(codec):
-                    self.log(f"This is {codec}, which Resolve can't play properly.")
-                    converted = self._to_h264(path)
-                    if self._cancelled():
-                        self._stopped()
-                        return
-                    path = converted or path
+            # The preparation pass: the fast, seek-friendly transcode described
+            # in media.py. A reused whole video has already been through it (it
+            # is the finished "<stem>.mp4").
+            section = None
+            if start is not None and end is not None:
+                section = media.Section(to_seconds(start), to_seconds(end))
+            path = self._prepare(raw, section)
+            if self._cancelled():
+                self._stopped()
+                return
+            if path is None:
+                self._progress(0.0, "Failed — see log")
+                self.reveal_log()
+                return
 
             if insert:
                 # Past this point the file exists; the insert itself is quick and
@@ -1972,25 +1896,10 @@ class YeetApp:
 
             # Recap what we got — the filename is only an id, so the
             # human-readable title and channel are worth restating here.
-            stream = self._probe_stream(path)
+            info = self._probe_media(path)
             self.log(f"  Video:   {meta.get('title') or 'unknown'}")
             self.log(f"  Channel: {meta.get('channel') or 'unknown'}")
-            self.log(f"  Quality: {self._describe_stream(stream) or 'unknown'}")
-
-            codec = str((stream or {}).get("codec_name") or "")
-            if self._scrubs_poorly(codec):
-                # Reached when the conversion was declined, failed, or the codec
-                # came through on a section. Generate Optimized Media is NOT
-                # suggested here: it has to decode the file too, so it fails on
-                # exactly the clips that need it.
-                self.log(f"  WARNING: {codec} — Resolve has no usable decoder for "
-                         "this.")
-                self.log("           Expect dropped frames, and the clip may go "
-                         "MEDIA OFFLINE.")
-                if whole and not self.reencode_h264:
-                    self.log("           Switch 'Whole videos above 1080p' to "
-                             "'Keep quality' in Settings")
-                    self.log("           to convert it to H.264 automatically.")
+            self.log(f"  Quality: {info.describe() if info else 'unknown'}")
 
             self.log("Make sure to credit the sources!", tag="highlight")
             self._progress(1.0, f"Done — {res['clipName']}")
@@ -2092,9 +2001,9 @@ class YeetApp:
                 existing = None
             if existing:
                 self.log(f"Already downloaded — reusing {os.path.basename(existing)}")
-                described = self._describe_stream(self._probe_stream(existing))
-                if described:
-                    self.log(f"  {described}")
+                info = self._probe_media(existing)
+                if info:
+                    self.log(f"  {info.describe()}")
                 self.log("  Delete that file to download it again.")
                 self._progress(P_DOWNLOAD, "Using existing download…")
                 return existing
@@ -2111,23 +2020,22 @@ class YeetApp:
             *self.js_args,
             url,
             "-f", format_selector(max_height),
-            # With the re-encode off, a whole video must arrive as H.264 in the
-            # first place, since nothing downstream will fix it — and that means
-            # letting codec outrank resolution. Everywhere else, resolution wins
-            # and H.264 is only the tiebreaker.
-            "-S", (FORMAT_SORT_H264_FIRST if whole and not self.reencode_h264
-                   else FORMAT_SORT),
+            "-S", FORMAT_SORT,
+            # MP4 for the raw download: yt-dlp then hides the keyframe lead of a
+            # section behind an edit list, so the file already plays from the
+            # in point and the conversion's trim has nothing left to do.
             "--merge-output-format", "mp4",
             "--no-playlist",
-            "-o", os.path.join(job_dir, stem + ".%(ext)s"),
+            "-o", os.path.join(job_dir, stem + SOURCE_TAG + ".%(ext)s"),
             "--newline",
         ]
         if not whole:
-            # Section mode: fetch only the requested range, re-encoding around the
-            # cut points so the trim is frame-accurate. Omitted entirely for a
-            # whole-video pull, where there's nothing to cut.
-            cmd += ["--download-sections", f"*{start}-{end}",
-                    "--force-keyframes-at-cuts"]
+            # Section mode: fetch only the requested range, cut at the keyframe
+            # before the in point and exactly at the end point, with no
+            # re-encoding here — the preparation pass makes the in point exact
+            # (media.py explains how). Never --force-keyframes-at-cuts: that
+            # re-encodes every clip with the container's default encoder.
+            cmd += ["--download-sections", f"*{start}-{end}"]
         if self.ffmpeg_path:
             cmd += ["--ffmpeg-location", os.path.dirname(self.ffmpeg_path)]
 
@@ -2210,10 +2118,10 @@ class YeetApp:
                 self._explain_403(got_bytes, saw_age_gate)
             return None
 
-        # Same rules as the reuse check: the merged mp4 if it's there, otherwise
-        # another container — never a scratch file and never a per-stream
-        # fragment, which would be video-only or audio-only.
-        produced = self._existing_download(job_dir, stem)
+        # The merged raw file if it's there, otherwise another container —
+        # never a scratch file and never a per-stream fragment, which would be
+        # video-only or audio-only.
+        produced = self._existing_download(job_dir, stem + SOURCE_TAG, raw=True)
         if not produced:
             self._cleanup_partial(job_dir, stem)
             self.log("yt-dlp finished but produced no usable file.")

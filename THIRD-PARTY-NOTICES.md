@@ -40,11 +40,17 @@ matters to you.
 | Tool | Platform | Source | Licence |
 |---|---|---|---|
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | all | official GitHub releases (`yt-dlp.exe` / `yt-dlp_macos`) | The Unlicense (public domain) |
-| [ffmpeg / ffprobe](https://ffmpeg.org/) | Windows | [yt-dlp's FFmpeg-Builds](https://github.com/yt-dlp/FFmpeg-Builds), downloaded on first run | GPL (as built) |
+| [ffmpeg / ffprobe](https://ffmpeg.org/) | Windows | [BtbN's FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), `win64-lgpl` variant, downloaded on first run | LGPL-2.1-or-later (as built, without the GPL-only encoder libraries) |
 | [ffmpeg / ffprobe](https://ffmpeg.org/) | macOS | **installed by the user** — `brew install ffmpeg` | GPL-3.0-or-later (as Homebrew builds it) |
 
-Not bundling is deliberate: ffmpeg's GPL terms attach to *distribution*, and this
-project distributes no part of it. The user obtains it directly from its
+The Windows build fetched is the LGPL variant because the app never needs the
+GPL-only encoders it omits — video is converted with ffmpeg's built-in MPEG-4
+encoder or the GPU's AV1 encoder, and nothing else (see `backend/media.py`).
+The same project's GPL build works identically if a user points `YEET_FFMPEG`
+at one.
+
+Not bundling is deliberate: ffmpeg's licence terms attach to *distribution*, and
+this project distributes no part of it. The user obtains it directly from its
 publisher, and can substitute their own build via the `YEET_FFMPEG` /
 `YEET_FFPROBE` / `YEET_YTDLP` environment variables.
 

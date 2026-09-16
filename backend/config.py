@@ -52,19 +52,11 @@ DEFAULTS: dict = {
     "download_dir": default_download_dir(),
     # End point applied at launch, measured from the in point.
     "default_length": 30,
-    # Whole-video downloads only, and only above 1080p, where YouTube offers
-    # nothing but VP9 and AV1 — Resolve software-decodes both at around real
-    # time, so it drops frames and eventually reports MEDIA OFFLINE.
-    #
-    #   True  — keep the resolution and convert to H.264 afterwards. Costs
-    #           roughly 0.6x the video's duration.
-    #   False — ask YouTube for H.264 instead, which caps the download at 1080p
-    #           but finishes immediately.
-    #
-    # Sections are unaffected: --force-keyframes-at-cuts already re-encodes them
-    # to H.264, which is why clips have always worked where full videos didn't.
-    "reencode_h264": True,
 }
+
+# Older versions wrote a re-encode setting that no longer exists. load()
+# ignores any unknown key and save() writes only DEFAULTS, so a stale file
+# heals itself.
 
 
 def load() -> dict:

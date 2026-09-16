@@ -24,8 +24,13 @@ this list does not arise.
 
 ffmpeg does not, and the difference is not cosmetic:
 
-  * Windows — yt-dlp maintains FFmpeg-Builds, the builds yt-dlp itself is tested
-    against. Auto-downloaded.
+  * Windows — BtbN's FFmpeg-Builds, the project yt-dlp's own FFmpeg-Builds is a
+    fork of (yt-dlp's README states it applies no patches, so the binaries are
+    the same). Auto-downloaded. The *LGPL* variant is fetched deliberately: it
+    leaves out the GPL-only encoder libraries, none of which this app invokes
+    (media.py uses exactly two encoders), while keeping everything it does
+    use: the native MPEG-4 encoder, NVENC/Quick Sync/AMF AV1, dav1d, libvpx
+    and the AAC/Opus codecs.
 
   * macOS — there is no equivalent. ffmpeg.org links exactly one macOS source,
     evermeet.cx, which states it will not build for Apple Silicon. Every arm64
@@ -74,10 +79,11 @@ YTDLP_URL = ("https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
              + _YTDLP_ASSET["win32" if _pp.WINDOWS else
                             "darwin" if _pp.MACOS else "linux"])
 
-# Windows only — see the module docstring for why there is no macOS counterpart.
+# Windows only — see the module docstring for why there is no macOS counterpart,
+# and for why it is the LGPL build.
 FFMPEG_URL = (
-    "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/"
-    "ffmpeg-master-latest-win64-gpl.zip"
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/"
+    "ffmpeg-master-latest-win64-lgpl.zip"
 )
 
 

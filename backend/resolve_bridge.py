@@ -176,12 +176,18 @@ def get_timeline_info() -> dict:
 
 
 def import_and_insert(path: str, insert_at: str = "playhead",
-                      track_index: int | None = None) -> dict:
+                      track_index: int | None = None,
+                      start_frame: int = 0, end_frame: int | None = None) -> dict:
     """Import `path` into the media pool and place it on the current timeline.
 
     insert_at: "playhead" -> at the current timecode
                "start"    -> at the timeline's first frame
                "end"      -> appended after the last clip
+
+    start_frame / end_frame pick the part of the clip that goes on the
+    timeline, in source frames (end exclusive, as Resolve counts it). Used for
+    a remuxed section, which keeps the keyframe before the in point so that
+    nothing has to be re-encoded; the extra frames stay available as a handle.
     """
     if not os.path.isfile(path):
         raise ResolveError(f"File not found: {path}")
@@ -203,6 +209,10 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     item = items[0]
 
     clip_info: dict = {"mediaPoolItem": item}
+    if start_frame:
+        clip_info["startFrame"] = int(start_frame)
+    if end_frame is not None:
+        clip_info["endFrame"] = int(end_frame)
     if insert_at == "playhead":
         fps = float(tl.GetSetting("timelineFrameRate") or 24)
         frame = _timecode_to_frames(tl.GetCurrentTimecode(), fps)

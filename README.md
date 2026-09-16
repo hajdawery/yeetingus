@@ -4,11 +4,11 @@
 
 # YEETingus
 
-**Grab any part of a YouTube video or Twitch clip and put it straight into your DaVinci Resolve timeline.**
+**An open-source media ingestion tool for video editors: grab the part of a video you have the right to use and put it straight into your DaVinci Resolve timeline.**
 
-Paste a link, set the in/out point, and press one button. No browser, full-video download, or manual importing.
+Paste a link, set the in/out point, and press one button. No browser, no full-video download, no manual importing, no conversion step — the clip arrives ready to scrub.
 
-![version](https://img.shields.io/badge/version-1.3.1-edff00?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-1.4.0-edff00?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
@@ -19,9 +19,9 @@ Paste a link, set the in/out point, and press one button. No browser, full-video
 
 ## What it does
 
-YEETingus is a small DaVinci Resolve tool for quickly grabbing video clips from YouTube and Twitch.
+YEETingus is an open-source media ingestion tool for video editors. It retrieves media you have the right to use and prepares it for editing workflows such as DaVinci Resolve. This includes your own uploads, openly licensed material, and promotional media made available for creator, press, or editorial use.
 
-Instead of downloading a whole video, trimming it, importing it and dragging it onto the timeline, YEETingus downloads only the part you need and places it at your playhead.
+Instead of downloading a whole video, trimming it, converting it, importing it and dragging it onto the timeline, YEETingus downloads only the part you need, converts it into a file Resolve scrubs smoothly, and places it at your playhead.
 
 ![YEETingus](assets/screenshot.jpg)
 
@@ -46,10 +46,9 @@ Instead of downloading a whole video, trimming it, importing it and dragging it 
 ### Quality and playback
 - Choose up to **Best, 2160p, 1440p, 1080p, 720p, or 480p**.
 - The app checks which quality the video actually provides.
-- H.264 is preferred because it plays and scrubs well in Resolve.
-- Clips are converted to H.264 when needed, so they remain playable in Resolve.
-- Whole videos above 1080p are converted to H.264 too, or capped at 1080p instead if you prefer to skip the wait.
-- The log reports the actual resolution, codec, and frame rate of the resulting file.
+- Full resolution at every quality — nothing is capped to make Resolve happy.
+- Every download is converted into an **editing intermediate with a keyframe every half second**, so Resolve scrubs, steps and jumps through it instantly — using the GPU's AV1 encoder when there is one (seconds, even for 4K60), otherwise the CPU.
+- The log reports the actual resolution, codec, and frame rate of the resulting file, and what was done to it.
 
 ### File handling
 - Clips are stored in your Videos folder by default.
@@ -60,7 +59,7 @@ Instead of downloading a whole video, trimming it, importing it and dragging it 
 
 ### Quality of life
 - Stop a download at any time.
-- Clear progress states: downloading, merging, converting, inserting, etc.
+- Clear progress states: downloading, merging, preparing, inserting, etc.
 - Optional collapsible log.
 - UI scales correctly on different display sizes.
 - Dark Windows title bar.
@@ -234,10 +233,7 @@ Settings are saved between installations.
 
 - **Clip storage folder** — Videos by default (`Movies` on macOS).
 - **Default clip length** — `15s`, `30s`, `60s`, or `90s`.
-- **Whole videos above 1080p**
-  - **Keep quality** — keep the original resolution and convert to H.264.
-  - **Keep it quick** — skip conversion and cap the download at 1080p.
-- **Tool versions and paths** — yt-dlp, ffmpeg, and Deno.
+- **Tool versions and paths** — yt-dlp, ffmpeg, and Deno, plus which encoder the conversion will use on this machine.
 - **Resolve diagnostics** — scripting library and Python compatibility.
 - **Update yt-dlp**.
 - **Install JavaScript runtime** when Deno is missing.
@@ -276,23 +272,31 @@ If that file already exists and is complete, YEETingus reuses it instead of down
 
 ---
 
-## Codecs and smooth playback
+## Why the clip is converted, and what that means for you
 
-YouTube normally provides H.264 up to 1080p. At 1440p and 4K, it usually provides VP9 or AV1 instead.
+Videos on the web are made for *watching*, not editing. To keep them small, the site stores a full picture only every few seconds and just the changes in between. That is fine for playback, but when you scrub a timeline, Resolve has to rebuild every frame from the last full picture — up to a few hundred frames at 4K — and that is what makes a raw download feel sticky and slow on the timeline.
 
-Resolve does not handle those codecs well enough for smooth high-resolution playback.
+So YEETingus converts every clip into a file made for editing: a full picture every half second. Resolve then scrubs, steps and jumps through it instantly. There is nothing to configure; the app picks the fastest way your computer can do it:
 
-Because of this:
+| Your computer | How it converts | How fast (4K, 60 fps) |
+|---|---|---|
+| A recent graphics card that can encode AV1 — NVIDIA RTX 40 or 50 series, Intel Arc, AMD RX 7000 | on the graphics card | a one-minute clip in about 10 seconds |
+| Anything else (older graphics cards, all Macs) | on the processor, using a simple, universal format | a one-minute clip in 10–25 seconds on a modern processor |
 
-- **Clips** are converted to H.264 automatically.
-- **Whole videos above 1080p** are converted to H.264 when **Keep quality** is selected.
-- **Keep it quick** skips conversion but limits whole videos to 1080p.
+What that costs and where the limits are, in plain terms:
 
-Full-quality conversion takes extra time — roughly 60% of the video's length in typical testing.
+- **Files are bigger than the download — roughly 1.5 to 3 times.** An editing-friendly file has far more full pictures in it than a streaming file. That is the whole point, and it is a normal size for editing material (professional editing formats are 50–200 times bigger). A one-minute 4K clip is typically 130–200 MB.
+- **Quality does not visibly change.** The conversion is tuned so that text, fine detail and gradients look the same as the download. We measured it; the numbers are in [BENCHMARK.md](BENCHMARK.md).
+- **Full resolution is always kept.** Nothing is capped at 1080p any more.
+- **HDR and 10-bit video are kept — but only on the graphics-card path.** If your clip is HDR and your computer converts on the processor instead, the result is ordinary 8-bit SDR. The log tells you when this happens.
+- **Resolve 18.1 or newer is needed for clips made on the graphics-card path.** Older Resolve versions cannot play AV1 at all. If you are on an older Resolve, the processor path works everywhere.
+- **On Macs everything goes through the processor path**, because Apple's chips cannot encode AV1. It is still fast, but 4K clips are a little heavier for Resolve to play back than on a PC with a recent graphics card.
+- **Very long 4K downloads on the processor path are heavy for Resolve to play** (scrubbing is still instant). For whole 4K videos on such a machine, use Resolve's *Generate Optimized Media* or download at 1440p.
+- **Audio is copied untouched** (AAC). It is only converted when the site offered nothing but Opus, which some Resolve versions cannot play.
+- **Clips are frame-exact** at the in point and end point you typed, to within one frame.
+- **Clips downloaded by an older version of YEETingus** are reused as they are. Delete the file (the log shows the folder) to download and convert it the new way.
 
-For example, a 10-minute 4K video may need around 6 additional minutes to convert.
-
-This is intentional: the goal is a file that Resolve can actually play smoothly.
+Why not just hand Resolve the download as it is? We tried — it is instant and loses nothing, but on a 4K timeline it scrubbed badly for the reason above, and the converted clips scrubbed perfectly. The full comparison, including the other formats that were tested and rejected, is in [BENCHMARK.md](BENCHMARK.md).
 
 ---
 
@@ -307,7 +311,7 @@ DaVinci Resolve
 YEETingus
       │
       ├── yt-dlp ── downloads video
-      ├── ffmpeg ── trims / converts video
+      ├── ffmpeg ── converts it into a seek-friendly intermediate (backend/media.py decides how)
       └── Deno ──── solves YouTube JS challenges
       │
       ▼
@@ -342,17 +346,11 @@ Make sure:
 
 Click `↻` next to the connection status to check again.
 
-### A whole 4K video stutters or goes Media Offline
+### A 4K video stutters or goes Media Offline
 
-This usually means the file is VP9 or AV1.
+Check the **Quality** line in the log. If it says `av1`, the file was made with your GPU's AV1 encoder, and the same GPU decodes it — so an older Resolve version is the likely cause: AV1 playback needs Resolve 18.1 or later.
 
-Go to:
-
-**Settings → Whole videos above 1080p → Keep quality**
-
-Download the video again. It will be converted to H.264.
-
-If you want it faster, use **Keep it quick**, which limits whole videos to 1080p.
+A whole video downloaded by an older version of YEETingus is reused as-is. Delete it (the log shows the folder) and download again to have it prepared the new way.
 
 ### "No JavaScript runtime"
 
@@ -376,20 +374,21 @@ The video does not offer 4K. YEETingus falls back to the best available quality 
 
 ### 4K clip playback is slow
 
-Check the codec in the log. VP9/AV1 at high resolutions can be difficult for Resolve to decode.
-
-Clips with an in/out point should normally be H.264.
+Check the **Video** line in Settings → Tools: without a hardware AV1 encoder everything is converted on the CPU to MPEG-4, which Resolve decodes in software — fine for 1080p and 1440p, but 4K60 is heavy for any software decoder. Generate Optimized Media in Resolve for those clips, or download at 1440p.
 
 ---
 
 ## Known limitations
 
+- **Every clip is converted, so it takes a few seconds** after the download (about 10 seconds per minute of 4K on a recent graphics card, up to about 25 on the processor) and the file is 1.5–3 times bigger than the download. See [above](#why-the-clip-is-converted-and-what-that-means-for-you) for why.
+- **Resolve 18.1 or newer** is needed to play clips made on a computer with an AV1-capable graphics card.
+- **HDR is kept only on the graphics-card path**; on the processor path HDR clips become SDR.
+- **Macs always use the processor path** (no AV1 encoding on Apple chips).
 - **29.97/59.94 drop-frame timelines:** playhead placement can be off by a frame or two.
 - **Linux:** not tested or supported.
 - **Intel Macs:** not tested or shipped; Apple Silicon is the supported macOS platform.
 - **macOS:** ffmpeg must be installed manually.
 - **macOS Light Mode:** the title bar may remain light.
-- **Whole videos above 1080p:** require conversion when keeping full quality.
 - **No automatic app updates yet.**
 - **Mostly tested with YouTube and Twitch.** yt-dlp supports many other sites, but they are not officially tested by this project.
 - **Age-restricted videos:** currently unsupported because no signed-in browser session is used.
@@ -398,7 +397,7 @@ Clips with an in/out point should normally be H.264.
 
 ## Legal
 
-Downloading videos may violate the terms of service of the site you download from. Copyright belongs to the content owner.
+YEETingus is for media you have the right to use: your own uploads, openly licensed material, and promotional media made available for creator, press, or editorial use. Downloading other videos may violate the terms of service of the site you download from, and copyright belongs to the content owner.
 
 Fair use / fair dealing can apply to commentary, criticism, review, teaching, and similar uses, but the rules depend on your country and situation. YEETingus does not give you permission to use copyrighted material.
 
