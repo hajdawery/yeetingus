@@ -18,11 +18,11 @@
   --border-strong: #303034;
   --text: #f2f2f3;
   --muted: #8d8d95;
-  --accent: #c8f000;
-  --accent-hover: #d6ff1a;
-  --accent-text: #0e120a;
-  --accent-soft: rgba(200, 240, 0, 0.16);
-  --accent-glow: rgba(200, 240, 0, 0.35);
+  --accent: #fcca74;
+  --accent-hover: #ffd88f;
+  --accent-text: #1a1206;
+  --accent-soft: rgba(252, 202, 116, 0.18);
+  --accent-glow: rgba(252, 202, 116, 0.35);
   --surface-3: #222226;
   --badge: #1e3a8a;
   --danger: #ef4444;
@@ -47,11 +47,11 @@
   --border-strong: #cfcfd6;
   --text: #17171b;
   --muted: #6b6b75;
-  --accent: #9ab800;
-  --accent-hover: #8aa600;
-  --accent-text: #111;
-  --accent-soft: rgba(154, 184, 0, 0.18);
-  --accent-glow: rgba(154, 184, 0, 0.35);
+  --accent: #e8a93c;
+  --accent-hover: #d99a2c;
+  --accent-text: #1a1206;
+  --accent-soft: rgba(232, 169, 60, 0.18);
+  --accent-glow: rgba(232, 169, 60, 0.35);
   --surface-3: #e9e9ee;
   --badge: #1f5be6;
   color-scheme: light;
@@ -385,6 +385,21 @@ img { display: block; }
 .clip-actions { flex: none; display: flex; align-items: center; gap: 2px; opacity: .55; transition: opacity .12s; }
 .clip:hover .clip-actions, .clip.is-armed .clip-actions { opacity: 1; }
 .clip-yeet:not(:disabled) { color: var(--accent); }
+.icon-btn.is-copied { color: var(--ok); }
+
+/* Selection mode: rows become checkboxes, a bar at the bottom acts on them. */
+.is-selecting .clip { cursor: pointer; }
+.clip.is-selected { background: var(--accent-soft); border-color: var(--accent); }
+.clip-check { display: inline-flex; flex: none; color: var(--muted); margin-left: auto; padding: 0 6px; }
+.clip-check.on { color: var(--accent); }
+.is-selecting .copyable { cursor: pointer; pointer-events: none; }
+.select-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px 10px 18px; border-top: 1px solid var(--border); background: var(--surface);
+}
+.select-count { font-size: 13px; color: var(--muted); }
+.select-count.bad { color: var(--danger); }
+.select-bar .btn-sm { gap: 6px; }
 
 /* ---- log (takes over the right panel) ---------------------------------------- */
 

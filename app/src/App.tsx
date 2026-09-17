@@ -315,9 +315,12 @@ export default function App() {
               canInsert={ready && resolveOk}
               onInsert={(c) => api?.insertClip(c.path, insertAt)}
               onPlay={(c) => api?.playClip(c.path)}
-              onSource={(c) => api?.openClipSource(c.path)}
               onOpen={(c) => api?.openClipFolder(c.path)}
-              onDelete={(c) => api?.deleteClip(c.path)}
+              onDelete={async (list) => {
+                // One at a time: the engine refuses deletes while busy, and
+                // each one fires a clips event that would otherwise race.
+                for (const c of list) await api?.deleteClip(c.path).catch(() => undefined);
+              }}
               onRefresh={loadClips}
               onOpenRoot={() => api?.openFolder()}
             />

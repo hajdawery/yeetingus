@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="YEETingus" width="130">
+<img src="assets/icon-tile.png" alt="YEETingus" width="130">
 
 # YEETingus
 
@@ -8,7 +8,7 @@
 
 Paste a link, set the in/out point, press one button. No browser, no full-video download, no manual importing, no conversion step — the clip arrives ready to scrub.
 
-![version](https://img.shields.io/badge/version-2.0.0-87a15e?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-2.0.0-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![premiere](https://img.shields.io/badge/Premiere%20Pro-26.3%2B-9999ff?style=flat-square&labelColor=1a1a1a)

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Clip, Meta } from "../api";
-import { Alert, Check, Download, ExternalLink, Film, Folder, Play, Refresh, Trash, User, X } from "../icons";
+import { Alert, Check, CheckSquare, Download, Film, Folder, Link, Play, Refresh, Square, Trash, User, X } from "../icons";
 import { secondsToTimestamp, toSeconds } from "../time";
 import { IconButton } from "./ui";
 
@@ -73,22 +73,20 @@ export function PreviewCard({ meta, loading, url, onClear }: {
   );
 }
 
-export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onSource, onOpen, onDelete, onRefresh, onOpenRoot }: {
+export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onOpen, onDelete, onRefresh, onOpenRoot }: {
   clips: Clip[] | null;
   loading: boolean;
   busy: boolean;
   canInsert: boolean;
   onInsert: (clip: Clip) => void;
   onPlay: (clip: Clip) => void;
-  onSource: (clip: Clip) => void;
   onOpen: (clip: Clip) => void;
-  onDelete: (clip: Clip) => void;
+  /** Deletes the given clips, in order. */
+  onDelete: (clips: Clip[]) => void;
   onRefresh: () => void;
   onOpenRoot: () => void;
 }) {
-  // Two-step delete, inline: the first click arms the row, the second confirms.
-  const [armed, setArmed] = useState<string | null>(null);
-  // "Copied" shown briefly on whichever title/channel was clicked.
+  // "Copied" shown briefly on whatever was clicked (title, channel, link).
   const [copied, setCopied] = useState<string | null>(null);
   const copy = async (key: string, text: string) => {
     try {
@@ -98,12 +96,32 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onS
     } catch { /* clipboard blocked; nothing sensible to do */ }
   };
 
+  // Selection mode: the checklist icon in the header turns rows into
+  // checkboxes; a bar at the bottom deletes the ticked ones in one go
+  // (two steps — Delete, then Confirm — no dialog).
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [armed, setArmed] = useState(false);
+  const toggle = (path: string) =>
+    setSelected((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
+  const leave = () => { setSelecting(false); setSelected(new Set()); setArmed(false); };
+  const all = clips ?? [];
+  const allSelected = all.length > 0 && selected.size === all.length;
+
   return (
-    <div className="history">
+    <div className={`history ${selecting ? "is-selecting" : ""}`}>
       <header className="panel-head">
         <h2>Clips</h2>
         <span className="panel-count">{clips ? clips.length : ""}</span>
         <span className="log-spacer" />
+        <IconButton
+          label={selecting ? "Done selecting" : "Select clips to delete"}
+          className={selecting ? "is-active" : ""}
+          disabled={!clips || clips.length === 0}
+          onClick={() => (selecting ? leave() : setSelecting(true))}
+        >
+          <Trash size={18} />
+        </IconButton>
         <IconButton label="Open clips folder" onClick={onOpenRoot}><Folder size={18} /></IconButton>
         <IconButton label="Refresh" onClick={onRefresh} className={loading ? "is-spinning" : ""}><Refresh size={18} /></IconButton>
       </header>
@@ -118,9 +136,13 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onS
       <div className="history-list">
         {clips?.map((clip) => {
           const thumb = thumbFor(clip);
-          const isArmed = armed === clip.path;
+          const isSelected = selected.has(clip.path);
           return (
-            <div key={clip.path} className={`clip ${isArmed ? "is-armed" : ""}`}>
+            <div
+              key={clip.path}
+              className={`clip ${isSelected ? "is-selected" : ""}`}
+              onClick={selecting ? () => toggle(clip.path) : undefined}
+            >
               <div className={`clip-thumb ${thumb ? "" : "is-empty"}`}>
                 {thumb ? <img src={thumb} alt="" loading="lazy" /> : <Film size={18} />}
               </div>
@@ -129,7 +151,8 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onS
                   type="button"
                   className={`clip-title copyable ${copied === clip.path + ":t" ? "is-copied" : ""}`}
                   title="Click to copy the title"
-                  onClick={() => copy(clip.path + ":t", clip.title || clip.name)}
+                  disabled={selecting}
+                  onClick={(e) => { e.stopPropagation(); copy(clip.path + ":t", clip.title || clip.name); }}
                 >
                   {clip.title || clip.name}
                 </button>
@@ -139,7 +162,8 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onS
                       type="button"
                       className={`copyable ${copied === clip.path + ":c" ? "is-copied" : ""}`}
                       title="Click to copy the channel"
-                      onClick={() => copy(clip.path + ":c", clip.channel)}
+                      disabled={selecting}
+                      onClick={(e) => { e.stopPropagation(); copy(clip.path + ":c", clip.channel); }}
                     >
                       {clip.channel}
                     </button>
@@ -149,30 +173,59 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onS
                   <span>{fmtWhen(clip.mtime)}</span>
                 </div>
               </div>
-              <div className="clip-actions">
-                {isArmed ? (
-                  <>
-                    <button type="button" className="btn btn-danger btn-sm" onClick={() => { setArmed(null); onDelete(clip); }}>Delete</button>
-                    <button type="button" className="btn btn-sm" onClick={() => setArmed(null)}>Keep</button>
-                  </>
-                ) : (
-                  <>
-                    <IconButton label="YEET into the timeline" className="clip-yeet" disabled={busy || !canInsert} onClick={() => onInsert(clip)}>
-                      <Download size={18} />
-                    </IconButton>
-                    <IconButton label="Play in your video player" onClick={() => onPlay(clip)}><Play size={18} /></IconButton>
-                    <IconButton label={clip.source ? "Open the video's page in your browser" : "Source link unknown for this clip"} disabled={!clip.source} onClick={() => onSource(clip)}>
-                      <ExternalLink size={18} />
-                    </IconButton>
-                    <IconButton label="Open folder" onClick={() => onOpen(clip)}><Folder size={18} /></IconButton>
-                    <IconButton label="Delete" disabled={busy} onClick={() => setArmed(clip.path)}><Trash size={18} /></IconButton>
-                  </>
-                )}
-              </div>
+              {!selecting && (
+                <div className="clip-actions">
+                  <IconButton label="YEET into the timeline" className="clip-yeet" disabled={busy || !canInsert} onClick={() => onInsert(clip)}>
+                    <Download size={18} />
+                  </IconButton>
+                  <IconButton label="Play in your video player" onClick={() => onPlay(clip)}><Play size={18} /></IconButton>
+                  <IconButton
+                    label={clip.source ? "Copy the video's link" : "Source link unknown for this clip"}
+                    className={copied === clip.path + ":u" ? "is-copied" : ""}
+                    disabled={!clip.source}
+                    onClick={() => clip.source && copy(clip.path + ":u", clip.source)}
+                  >
+                    {copied === clip.path + ":u" ? <Check size={18} /> : <Link size={18} />}
+                  </IconButton>
+                  <IconButton label="Open folder" onClick={() => onOpen(clip)}><Folder size={18} /></IconButton>
+                </div>
+              )}
+              {selecting && (
+                <span className={`clip-check ${isSelected ? "on" : ""}`}>
+                  {isSelected ? <CheckSquare size={22} /> : <Square size={22} />}
+                </span>
+              )}
             </div>
           );
         })}
       </div>
+
+      {selecting && (
+        <footer className="select-bar">
+          <button type="button" className="link-btn" onClick={() => setSelected(allSelected ? new Set() : new Set(all.map((c) => c.path)))}>
+            {allSelected ? "Select none" : "Select all"}
+          </button>
+          <span className="select-count">{selected.size} selected</span>
+          <span className="log-spacer" />
+          {armed ? (
+            <>
+              <span className="select-count bad">Delete {selected.size} clip{selected.size === 1 ? "" : "s"} from disk?</span>
+              <button type="button" className="btn btn-danger btn-sm" disabled={busy}
+                onClick={() => { onDelete(all.filter((c) => selected.has(c.path))); leave(); }}>
+                Delete
+              </button>
+              <button type="button" className="btn btn-sm" onClick={() => setArmed(false)}>Keep</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn btn-danger btn-sm" disabled={selected.size === 0 || busy} onClick={() => setArmed(true)}>
+                <Trash size={16} /> Delete
+              </button>
+              <button type="button" className="btn btn-sm" onClick={leave}>Cancel</button>
+            </>
+          )}
+        </footer>
+      )}
     </div>
   );
 }
