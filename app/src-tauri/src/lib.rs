@@ -190,6 +190,20 @@ async fn service_info(slot: tauri::State<'_, Arc<ServiceSlot>>) -> Result<Servic
         .map_err(|e| e.to_string())?
 }
 
+/// Open a file or folder with the shell, or reveal it selected in its folder.
+///
+/// Done here rather than in the service on purpose: Windows only lets the
+/// process that owns the foreground window put a new window on top, and
+/// that's this one. Opened from the service, Explorer came up behind the app.
+#[tauri::command]
+fn show_path(path: String, reveal: bool) -> Result<(), String> {
+    if reveal {
+        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
+    } else {
+        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -233,7 +247,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![service_info])
+        .invoke_handler(tauri::generate_handler![service_info, show_path])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

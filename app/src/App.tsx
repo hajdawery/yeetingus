@@ -322,7 +322,7 @@ export default function App() {
                 for (const c of list) await api?.deleteClip(c.path).catch(() => undefined);
               }}
               onRefresh={loadClips}
-              onOpenRoot={() => api?.openFolder()}
+              onOpenRoot={() => api?.openFolder(state?.settings.download_dir)}
             />
           </>
         )}

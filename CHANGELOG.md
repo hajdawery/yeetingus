@@ -5,6 +5,24 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [2.0.1] — 2026-09-17
+
+### Added
+- Bulk insert: a download icon in the Clips header selects several clips and
+  YEETs them into the timeline in order, as one job.
+- A "No thumbnail" placeholder for clips whose thumbnail is missing or broken.
+
+### Changed
+- One "Frame rate" setting (Sharp, Blend, Optical Flow, Off) replaces the
+  separate conform and Resolve retime controls.
+- Clip folders for X, Instagram and other post-style sites, or any video
+  whose title is just the post text, are named by id and account only.
+- Folders and clips opened from the app come up on top of it on Windows.
+
+### Fixed
+- The window no longer sits blank for a few seconds at launch while the
+  service starts.
+
 ## [2.0.0] — 2026-09-17
 
 The rewrite. A new window (Tauri + React) on a new architecture (one Python

@@ -193,7 +193,9 @@ export class Api {
   log(text: string, tag?: string) {
     return this.call<{ ok: boolean }>("POST", "/api/log", { text, tag: tag ?? null });
   }
-  openFolder() {
+  /** The clips folder. In Tauri the app opens it itself so Explorer lands on top. */
+  async openFolder(dir?: string) {
+    if (dir && (await showPath(dir, false))) return { opened: dir };
     return this.call<{ opened: string }>("POST", "/api/open-folder", {});
   }
   clips() {
@@ -213,10 +215,12 @@ export class Api {
       throw e;
     });
   }
-  openClipFolder(path: string) {
+  async openClipFolder(path: string) {
+    if (await showPath(path, true)) return { opened: path };
     return this.call<{ opened: string }>("POST", "/api/clips/open", { path });
   }
-  playClip(path: string) {
+  async playClip(path: string) {
+    if (await showPath(path, false)) return { opened: path };
     return this.call<{ opened: string }>("POST", "/api/clips/play", { path });
   }
   openClipSource(path: string) {
@@ -239,6 +243,23 @@ export class Api {
     }
     es.onerror = () => onError?.();
     return () => es.close();
+  }
+}
+
+/**
+ * Open (or reveal, selected in its folder) a path from the app process, so
+ * the window it opens comes to the front on Windows. False outside Tauri or
+ * if it failed, and the caller falls back to asking the service.
+ */
+async function showPath(path: string, reveal: boolean): Promise<boolean> {
+  const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
+  if (!w.__TAURI_INTERNALS__) return false;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("show_path", { path, reveal });
+    return true;
+  } catch {
+    return false;
   }
 }
 
