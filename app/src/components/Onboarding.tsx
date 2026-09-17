@@ -50,7 +50,7 @@ export function Onboarding({ api, state, toolBusy, onDone, onLog }: {
               </button>
               <button type="button" className="choice" onClick={() => choose("premiere")}>
                 <span className="choice-title">Premiere Pro</span>
-                <span className="choice-sub">26.3+ · through a small panel</span>
+                <span className="choice-sub">25+ · through a small panel</span>
               </button>
             </div>
             <footer className="dialog-foot">

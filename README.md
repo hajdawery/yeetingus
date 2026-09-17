@@ -11,7 +11,7 @@ Paste a link, set the in/out point, press one button. No browser, no full-video 
 ![version](https://img.shields.io/badge/version-2.0.0-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
-![premiere](https://img.shields.io/badge/Premiere%20Pro-26.3%2B-9999ff?style=flat-square&labelColor=1a1a1a)
+![premiere](https://img.shields.io/badge/Premiere%20Pro-25%2B-9999ff?style=flat-square&labelColor=1a1a1a)
 ![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
 
 </div>
@@ -24,7 +24,7 @@ YEETingus retrieves media you have the right to use — your own uploads, openly
 
 Instead of downloading a whole video, trimming it, converting it, importing it and dragging it onto the timeline, YEETingus downloads only the part you need, converts it into a file your editor scrubs smoothly, and places it at your playhead.
 
-![YEETingus](assets/screenshot.jpg)
+![YEETingus](assets/screenshot.png)
 
 ## 2.0
 
@@ -100,7 +100,7 @@ And then there's the codec.
 
 It's 2026. AV1 is the codec YouTube serves you for anything past 1080p, the codec every GPU from the last four years encodes and decodes in hardware, the codec Resolve has played since 18.1. YEETingus makes its editing intermediates in AV1 for exactly those reasons: fast to make, instant to scrub, half the size.
 
-**Premiere Pro 26.3 does not decode AV1.** Import an AV1 MP4 and you get a waveform. Audio only. No error, no warning, just silently less video than you gave it. This is the flagship NLE of the company that sells you Media Encoder.
+**Premiere Pro (26.3, and every version before it) does not decode AV1.** Import an AV1 MP4 and you get a waveform. Audio only. No error, no warning, just silently less video than you gave it. This is the flagship NLE of the company that sells you Media Encoder.
 
 So when Premiere is your editor, YEETingus encodes **HEVC** instead — same half-second keyframes, same hardware path, Premiere plays it fine — and if you insert an older AV1 clip from the history, it quietly makes an HEVC copy beside it first. You'll never notice. Adobe should.
 
@@ -112,7 +112,7 @@ So when Premiere is your editor, YEETingus encodes **HEVC** instead — same hal
 |---|---|
 | OS | Windows 10/11, or macOS on Apple Silicon |
 | DaVinci Resolve | **Studio**, with `External scripting using → Local` |
-| Premiere Pro | 26.3 or newer, with Creative Cloud desktop installed (its plugin installer is used) |
+| Premiere Pro | Any version with UXP (25 or newer; tested on 26.3), with Creative Cloud desktop installed (its plugin installer is used) |
 | yt-dlp, ffmpeg, Deno | Downloaded automatically on first run (macOS: `brew install ffmpeg`) |
 | Python / Node / Rust | Only to build from source |
 

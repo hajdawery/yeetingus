@@ -6,8 +6,14 @@ MUST be run with a Python that Resolve's fusionscript library can be loaded into
 (currently 3.6-3.13 — see resolve_bridge.MAX_PY): the frozen app embeds whichever
 interpreter builds it.
 
-    Windows:  py -3.13 build.py        ->  dist\\YEETingus.exe
-    macOS:    python3.13 build.py      ->  dist/YEETingus.app
+    2.0 (the Tauri app):
+      py -3.13 build.py --release      ->  dist\\YEETingus-windows-x86_64.exe
+      python3.13 build.py --release    ->  dist/YEETingus-Mac-ARM.dmg
+      (--service freezes only the sidecar, --bundle only runs tauri build)
+
+    1.x Tk app, still buildable:
+      py -3.13 build.py                ->  dist\\YEETingus.exe
+      python3.13 build.py              ->  dist/YEETingus.app
 
 No Python is needed on the target machine. yt-dlp is fetched on first run and
 ffmpeg is never bundled, so neither is included here — see backend/deps.py for
@@ -323,9 +329,49 @@ def build_service() -> int:
     return 0
 
 
+def build_bundle() -> int:
+    """`npm run tauri build`, then the installer under the release name.
+
+    Tauri names its output after the version and arch
+    (YEETingus_2.0.0_x64-setup.exe, YEETingus_2.0.0_aarch64.dmg); the
+    website links a fixed name per platform (release_asset_name), so the
+    file is copied to dist/ under that name — same rule as the 1.x builds.
+    """
+    app_dir = os.path.join(HERE, "app")
+    npm = "npm.cmd" if WINDOWS else "npm"
+    print("Running: npm run tauri build   (in app/)")
+    rc = subprocess.run([npm, "run", "tauri", "build"], cwd=app_dir).returncode
+    if rc != 0:
+        return rc
+    bundle = os.path.join(app_dir, "src-tauri", "target", "release", "bundle")
+    import glob as _glob
+    if WINDOWS:
+        made = _glob.glob(os.path.join(bundle, "nsis", "*-setup.exe"))
+        ext = ".exe"
+    else:
+        made = _glob.glob(os.path.join(bundle, "dmg", "*.dmg"))
+        ext = ".dmg"
+    if not made:
+        print(f"ERROR: tauri build finished but no installer under {bundle}")
+        return 1
+    src = max(made, key=os.path.getmtime)
+    os.makedirs(os.path.join(HERE, "dist"), exist_ok=True)
+    dest = os.path.join(HERE, "dist", release_asset_name() + ext)
+    shutil.copy2(src, dest)
+    print("")
+    print(f"Release asset:  {dest}  ({os.path.getsize(dest) / 1048576:.1f} MB)")
+    return 0
+
+
 def main() -> int:
     if "--service" in sys.argv:
         return build_service()
+    if "--bundle" in sys.argv:
+        return build_bundle()
+    if "--release" in sys.argv:
+        # The whole 2.0 build: sidecar, then the installer.
+        rc = build_service()
+        return rc if rc else build_bundle()
 
     # The supported range lives in resolve_bridge so there's one place to bump.
     sys.path.insert(0, os.path.join(HERE, "backend"))

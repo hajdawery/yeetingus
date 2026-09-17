@@ -6,7 +6,7 @@ YEETingus window asks, it imports a clip and places it on the active sequence
 at the playhead (or at the start). The YEETingus window stays the UI; the
 panel only shows whether it is connected.
 
-## Setup (Windows, Premiere 26.3+)
+## Setup (Windows, Premiere 25+ — anything with UXP; tested on 26.3)
 
 1. In YEETingus: Settings → Editor → **Premiere Pro** → **Install the Premiere
    panel**. YEETingus zips `panel/` into a `.ccx` and hands it to Adobe's own
