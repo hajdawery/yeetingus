@@ -67,10 +67,13 @@ fn service_command(app: &tauri::AppHandle) -> Result<Command, String> {
             .parent()
             .ok_or("no exe dir")?
             .to_path_buf();
+        // The list form of bundle.resources keeps the folder's tree, under
+        // the path it had in src-tauri: <resource dir>/resources/service/.
         let candidates = [
+            resource_dir.join("resources").join("service").join(name),
             resource_dir.join("service").join(name),
+            exe_dir.join("resources").join("service").join(name),
             exe_dir.join("service").join(name),
-            exe_dir.join(name), // a 2.0.0 one-file leftover, if someone has one
         ];
         for path in &candidates {
             if path.is_file() {

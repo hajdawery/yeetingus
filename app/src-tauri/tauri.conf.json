@@ -43,9 +43,9 @@
         "installMode": "currentUser"
       }
     },
-    "resources": {
-      "resources/service/**/*": "service/"
-    }
+    "resources": [
+      "resources/service"
+    ]
   },
   "plugins": {
     "deep-link": {
