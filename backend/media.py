@@ -73,6 +73,24 @@ HW_AV1_ENCODERS: dict[str, tuple[str, ...]] = {
     "darwin": (),                    # VideoToolbox has no AV1 encoder
 }
 
+# Premiere Pro doesn't decode AV1 (an AV1 MP4 imports as audio only — seen on
+# 26.3), so for Premiere the same 0.5 s-GOP intermediate is made in HEVC
+# instead, which Premiere plays natively and decodes in hardware. Same order
+# of preference; the CPU fallback is still MPEG-4 Part 2, which Premiere
+# also reads.
+HW_HEVC_ENCODERS: dict[str, tuple[str, ...]] = {
+    "win32": ("hevc_nvenc", "hevc_qsv", "hevc_amf"),
+    "linux": ("hevc_nvenc", "hevc_qsv", "hevc_vaapi"),
+    "darwin": ("hevc_videotoolbox",),
+}
+
+# What each editor can play, by ffprobe codec name. A finished file whose
+# codec isn't in the chosen editor's list is converted again before insert.
+EDITOR_CODECS: dict[str, tuple[str, ...]] = {
+    "resolve": ("av1", "mpeg4", "hevc", "h264", "prores", "dnxhd"),
+    "premiere": ("hevc", "h264", "mpeg4", "prores", "dnxhd"),
+}
+
 # Audio that goes straight into the MP4 unchanged. Anything else (Opus,
 # Vorbis) is converted to AAC: Resolve 21 does decode Opus in MP4, but earlier
 # builds imported it silently, and a 200x-realtime audio pass is cheap
@@ -301,11 +319,15 @@ def probe(ffprobe: str, path: str) -> SourceInfo | None:
 class Capabilities:
     """What this machine can do, found by trying rather than by asking."""
     av1_encoder: str | None = None     # a hardware AV1 encoder that initialised
+    hevc_encoder: str | None = None    # a hardware HEVC encoder (for Premiere)
 
     def describe(self) -> str:
-        if self.av1_encoder:
-            return f"hardware AV1 encoder: {self.av1_encoder}"
-        return "no hardware AV1 encoder — converting on the CPU (MPEG-4)"
+        parts = []
+        parts.append(f"hardware AV1 encoder: {self.av1_encoder}" if self.av1_encoder
+                     else "no hardware AV1 encoder — converting on the CPU (MPEG-4)")
+        if self.hevc_encoder:
+            parts.append(f"HEVC for Premiere: {self.hevc_encoder}")
+        return " · ".join(parts)
 
 
 def _try_encoder(ffmpeg: str, encoder: str, timeout: float = 30) -> bool:
@@ -328,6 +350,10 @@ def probe_capabilities(ffmpeg: str, platform: str = sys.platform) -> Capabilitie
         if _try_encoder(ffmpeg, enc):
             caps.av1_encoder = enc
             break
+    for enc in HW_HEVC_ENCODERS.get(platform, ()):
+        if _try_encoder(ffmpeg, enc):
+            caps.hevc_encoder = enc
+            break
     return caps
 
 
@@ -345,15 +371,17 @@ class Section:
 
 @dataclass
 class Plan:
-    encoder: str                       # "av1_nvenc" | "av1_qsv" | "av1_amf" | "av1_vaapi" | "mpeg4"
+    encoder: str                       # "av1_*" | "hevc_*" | "mpeg4"
     container: str = "mp4"
     gop: int = 0                       # frames
     rate: Fraction = Fraction(30)      # output frame rate
     video_args: list[str] = field(default_factory=list)
     audio_args: list[str] = field(default_factory=list)
     input_args: list[str] = field(default_factory=list)
+    filters: list[str] = field(default_factory=list)   # -vf chain, in order
     trim: tuple[float, float | None] | None = None   # (start, end) in file seconds
     notes: list[str] = field(default_factory=list)
+    conformed: bool = False            # rate changed to match a timeline
 
     @property
     def hardware(self) -> bool:
@@ -366,12 +394,35 @@ def gop_frames(fps: Fraction | float, seconds: float = GOP_SECONDS) -> int:
     return max(1, round(float(fps) * seconds))
 
 
-def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None) -> Plan:
+def _integer_ratio(a: Fraction, b: Fraction) -> bool:
+    """Whether one rate is a whole multiple of the other (60→30, 24→48)."""
+    hi, lo = max(a, b), min(a, b)
+    return lo > 0 and (hi / lo).denominator == 1
+
+
+CONFORM_METHODS = ("sharp", "blend")
+
+
+def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None,
+         editor: str = "resolve", target_fps: Fraction | None = None,
+         conform: str = "sharp") -> Plan:
     """Decide how to convert `src`. Pure: no I/O, so every branch is testable.
 
     `section` is the range the user asked for; None (or a zero-start, open-ended
     one) means the whole video, and then no lead is applied even if the audio
     track starts a few milliseconds late, as AAC priming can make it.
+
+    `editor` picks the codec family: AV1 for Resolve, HEVC for Premiere (see
+    HW_HEVC_ENCODERS). Everything else — GOP, trim, rate — is the same.
+
+    `target_fps` is the timeline's rate, when known: the clip is delivered at
+    exactly that rate so the editor never retimes it. `conform` says how:
+    "sharp" drops/repeats whole frames (every frame stays crisp; a 60→24
+    pulldown keeps its 2-3 cadence, as it does in any NLE), "blend" mixes
+    neighbouring frames (smoother motion, visibly ghosted on fast footage).
+    Whole-number and near-identical ratios are always sharp — there's
+    nothing to blend. Smooth *and* sharp needs optical flow, which is the
+    editor's job (Resolve: Speed Warp), not a download-time filter.
     """
     fps = src.fps or Fraction(30)
     section = section or Section()
@@ -388,9 +439,30 @@ def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None) ->
         notes.append(f"audio is {src.acodec}; converting to AAC for compatibility")
 
     gop = gop_frames(fps)
-    p = Plan(encoder=caps.av1_encoder or "mpeg4", gop=gop, audio_args=audio_args, notes=notes)
+    hw = caps.hevc_encoder if editor == "premiere" else caps.av1_encoder
+    p = Plan(encoder=hw or "mpeg4", gop=gop, audio_args=audio_args, notes=notes)
 
-    if caps.av1_encoder:
+    if editor == "premiere" and caps.hevc_encoder:
+        enc = caps.hevc_encoder
+        # hvc1 is the tag Apple and Adobe both expect for HEVC in MP4.
+        p.video_args = ["-c:v", enc, "-g", str(gop), "-bf", "0", "-tag:v", "hvc1"]
+        if enc == "hevc_nvenc":
+            p.video_args += ["-preset", "p1", "-tune", "ll", "-rc", "vbr",
+                             "-cq", NVENC_CQ, "-b:v", "0"]
+            p.input_args = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        elif enc == "hevc_qsv":
+            p.video_args += ["-preset", "veryfast", "-global_quality", NVENC_CQ,
+                             "-pix_fmt", "p010le" if ten_bit else "nv12"]
+        elif enc == "hevc_amf":
+            p.video_args += ["-quality", "speed", "-rc", "cqp", "-qp_i", NVENC_CQ,
+                             "-qp_p", NVENC_CQ, "-pix_fmt", "p010le" if ten_bit else "nv12"]
+        elif enc == "hevc_videotoolbox":
+            p.video_args += ["-q:v", "60", "-pix_fmt", "p010le" if ten_bit else "nv12"]
+        else:                                     # hevc_vaapi
+            p.video_args += ["-qp", NVENC_CQ]
+        if ten_bit:
+            notes.append("10-bit source kept at 10-bit (HEVC Main 10)")
+    elif editor != "premiere" and caps.av1_encoder:
         p.video_args = ["-c:v", caps.av1_encoder, "-g", str(gop), "-bf", "0"]
         if caps.av1_encoder == "av1_nvenc":
             p.video_args += ["-preset", "p1", "-tune", "ll", "-rc", "vbr",
@@ -413,7 +485,8 @@ def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None) ->
                         "-bf", "0", "-pix_fmt", "yuv420p"]
         if ten_bit or src.is_hdr:
             notes.append("MPEG-4 Part 2 is 8-bit only: HDR/10-bit source converted to "
-                         "8-bit. A hardware AV1 encoder would keep it.")
+                         "8-bit. A hardware " + ("HEVC" if editor == "premiere" else "AV1")
+                         + " encoder would keep it.")
 
     # Exact trim at the in point: decoding from the keyframe and dropping
     # frames before the target is what re-encoding buys us.
@@ -423,6 +496,35 @@ def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None) ->
     p.rate = nle_rate(fps)
     if abs(float(p.rate) - float(fps)) / float(fps) > 0.0005:
         notes.append(f"frame rate {float(fps):.3f} conformed to {float(p.rate):.6g} fps")
+
+    if target_fps and target_fps > 0 and abs(float(target_fps) - float(p.rate)) > 0.001:
+        src_rate, p.rate, p.conformed = p.rate, Fraction(target_fps), True
+        # The GOP follows the output rate: still one keyframe per half second.
+        p.gop = gop_frames(p.rate)
+        p.video_args = [a if a != str(gop) else str(p.gop) for a in p.video_args]
+        tgt = f"{p.rate.numerator}/{p.rate.denominator}"
+        near = abs(float(src_rate) / float(p.rate) - 1.0) < 0.005
+        if near:
+            # 60 vs 59.94, 30 vs 29.97: one frame in ~1000 dropped or repeated
+            # is invisible; blending every frame for that would only soften.
+            p.filters.append(f"fps={tgt}")
+            notes.append(f"{float(src_rate):.6g} → {float(p.rate):.6g} fps for the timeline "
+                         "(near-identical rates: one frame in ~1000 dropped or repeated)")
+        elif _integer_ratio(src_rate, p.rate) or conform != "blend":
+            p.filters.append(f"fps={tgt}")
+            notes.append(f"{float(src_rate):.6g} → {float(p.rate):.6g} fps for the timeline "
+                         "(frames dropped/repeated, every frame kept sharp)")
+        else:
+            p.filters.append(f"framerate=fps={tgt}")
+            notes.append(f"{float(src_rate):.6g} → {float(p.rate):.6g} fps for the timeline "
+                         "(neighbouring frames blended for smoother motion)")
+        # A CPU filter needs frames in system memory: keep GPU decoding, drop
+        # the GPU-resident output format (the encoder takes CPU frames fine).
+        p.input_args = [a for a in p.input_args
+                        if a not in ("-hwaccel_output_format", "cuda")] \
+            if "-hwaccel_output_format" in p.input_args else p.input_args
+        if "-hwaccel" in p.input_args and "cuda" not in p.input_args:
+            p.input_args += ["cuda"]
     return p
 
 
@@ -439,6 +541,8 @@ def build_command(ffmpeg: str, src: SourceInfo, p: Plan, output: str) -> list[st
         if p.trim[1] is not None:
             cmd += ["-t", f"{max(0.0, p.trim[1] - p.trim[0]):.6f}"]
     cmd += ["-i", src.path, "-map", "0:v:0", "-map", "0:a?"]
+    if p.filters:
+        cmd += ["-vf", ",".join(p.filters)]
     cmd += p.video_args + p.audio_args
     # A constant frame grid at the conformed rate: variable-rate sources get
     # frames duplicated or dropped so audio stays in sync.
@@ -451,6 +555,11 @@ def output_path_for(src_path: str, p: Plan) -> str:
     """Where the finished file goes: same stem, container from the plan."""
     stem, _ = os.path.splitext(src_path)
     return f"{stem}.{p.container}"
+
+
+def plays_in(editor: str, vcodec: str) -> bool:
+    """Whether a finished file's video codec is one `editor` decodes."""
+    return (vcodec or "").lower() in EDITOR_CODECS.get(editor, EDITOR_CODECS["resolve"])
 
 
 def estimate_seconds(src: SourceInfo, p: Plan, section: Section | None = None) -> float:

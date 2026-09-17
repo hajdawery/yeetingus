@@ -48,10 +48,27 @@ LEGACY_DOWNLOAD_DIR = os.path.join(tempfile.gettempdir(), "yeet_downloads")
 LENGTH_CHOICES = (15, 30, 60, 90)
 MAX_LENGTH = 86400  # a day — beyond this it's a typo, not an intention
 
+EDITORS = ("resolve", "premiere")
+# What Resolve does with a clip whose frame rate differs from the timeline's;
+# keys of resolve_bridge.RETIME_PROCESSES.
+RETIMES = ("project", "nearest", "blend", "optical")
+CONFORMS = ("sharp", "blend", "off")
+
 DEFAULTS: dict = {
     "download_dir": default_download_dir(),
     # End point applied at launch, measured from the in point.
     "default_length": 30,
+    # Where clips are pasted: DaVinci Resolve (its Python API) or Premiere Pro
+    # (through the YEETingus UXP panel).
+    "editor": "resolve",
+    # Set once the first-run setup has been through (or skipped).
+    "onboarded": False,
+    # Resolve only (Premiere's panel API has no time-interpolation control).
+    "retime": "blend",
+    # Deliver clips at the timeline's frame rate, converted once here, so the
+    # editor never has to retime them: "sharp" (drop/repeat frames), "blend"
+    # (mix neighbours), or "off" (keep the source rate; Resolve's retime applies).
+    "conform": "sharp",
 }
 
 # Older versions wrote a re-encode setting that no longer exists. load()
@@ -88,6 +105,12 @@ def load() -> dict:
     length = cfg.get("default_length")
     if not isinstance(length, int) or not 1 <= length <= MAX_LENGTH:
         cfg["default_length"] = DEFAULTS["default_length"]
+    if cfg.get("editor") not in EDITORS:
+        cfg["editor"] = DEFAULTS["editor"]
+    if cfg.get("retime") not in RETIMES:
+        cfg["retime"] = DEFAULTS["retime"]
+    if cfg.get("conform") not in CONFORMS:
+        cfg["conform"] = DEFAULTS["conform"]
 
     # Upgrade anyone still pointing at the old %TEMP% location, which the OS is
     # entitled to delete. Existing clips are NOT moved: timelines reference them

@@ -1,0 +1,44 @@
+<!--
+  The YEETingus panel for Premiere Pro.
+
+  It has no controls of its own: the YEETingus window is the UI. This panel is
+  the bridge — it keeps a line open to the YEETingus service and, when asked,
+  imports a clip and places it on the active sequence. So all it shows is
+  whether that line is open.
+
+  It takes Premiere's theme (document.theme + the --uxp-host-* variables),
+  following Sherlock's panel, so it looks like it belongs to the host.
+-->
+<style>
+  body.theme-light   { --bg: #f4f4f4; --inset: #ffffff; --border: #cacaca; --text: #1f1f1f; --dim: #6e6e6e; --ok: #1c7a32; --bad: #b5361f; }
+  body.theme-dark    { --bg: #323232; --inset: #262626; --border: #4a4a4a; --text: #e6e6e6; --dim: #a0a0a0; --ok: #6fcf7f; --bad: #f07a72; }
+  body.theme-darkest { --bg: #1d1d1d; --inset: #141414; --border: #3a3a3a; --text: #d8d8d8; --dim: #8e8e8e; --ok: #6fcf7f; --bad: #f07a72; }
+
+  body {
+    margin: 0; padding: 8px 10px; overflow: auto; font-size: 12px;
+    color: var(--uxp-host-text-color, var(--text));
+    background: var(--uxp-host-background-color, var(--bg));
+  }
+  .row { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); flex: none; }
+  .dot.on { background: var(--ok); }
+  #connection { font-weight: 600; }
+  p { margin: 0 0 6px; color: var(--uxp-host-text-color-secondary, var(--dim)); }
+  #log {
+    margin-top: 8px; padding: 6px 8px; min-height: 18px; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    font-family: Consolas, Menlo, monospace; font-size: 11px;
+    background: var(--inset); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--uxp-host-text-color-secondary, var(--dim));
+  }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+</style>
+
+<div class="row"><span class="dot" id="dot"></span><span id="connection">Waiting for YEETingus…</span></div>
+<p>Keep this panel open. Start YEETingus from the Start menu; it connects by itself. Clips YEETed from the app land on the active sequence.</p>
+<div class="buttons">
+  <sp-button id="connect" size="s" variant="secondary">Reconnect</sp-button>
+  <sp-button id="probe" size="s" variant="secondary">Check</sp-button>
+</div>
+<div id="log">Ready.</div>
+
+<script src="main.js"></script>

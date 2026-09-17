@@ -5,6 +5,11 @@ video you have the right to use (your own uploads, openly licensed material,
 promotional media for creator/press/editorial use), prepare it for editing, and
 paste it straight onto the current DaVinci Resolve timeline.
 
+This file is the Tk window. Everything it does — the download, the preparation
+pass, the Resolve insert, the tools and settings — lives in engine.py, which
+the window drives in-process and listens to for events. service.py exposes the
+same engine over localhost for the other front ends.
+
 Run from source (needs Python 3.6-3.13 — Resolve's fusionscript library is a C
 extension that CRASHES on 3.14+; see resolve_bridge.MAX_PY):
 
@@ -16,16 +21,10 @@ yt-dlp and ffmpeg are fetched automatically on first run into
 
 from __future__ import annotations
 
-import json
 import os
 import queue
-import re
-import signal
 import subprocess
 import sys
-import threading
-import time
-from datetime import datetime
 
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -34,59 +33,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config                    # noqa: E402
 import deps                      # noqa: E402
-import media                     # noqa: E402
 import naming                    # noqa: E402
 import resolve_bridge            # noqa: E402
 import theme as T                # noqa: E402
+from engine import (             # noqa: E402
+    QUALITY_OPTIONS, Engine, normalize_timestamp, seconds_to_timestamp, to_seconds,
+)
 from version import APP_NAME, AUTHOR_URL, COPYRIGHT, __version__  # noqa: E402
-
-# Progress is split into bands so the bar moves through the whole job, not just
-# the download: info lookup, download, the preparation pass (the conversion in
-# media.py), then the Resolve insert.
-P_INFO, P_DOWNLOAD, P_PREPARE, P_INSERT = 0.06, 0.70, 0.94, 0.97
-
-_PCT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
-
-# ffmpeg -progress output, for the preparation pass: "out_time_us=12345678".
-_FFMPEG_TIME_RE = re.compile(r"^out_time_us=(\d+)", re.MULTILINE)
 
 # Width of the log panel docked to the right; the window grows by this when the
 # log is shown. Authored at 96 DPI like every other pixel value.
 LOG_PANEL_W = 420
-
-def _spawn_kwargs() -> dict:
-    """subprocess keyword arguments for launching an external tool.
-
-    Three platform concerns, all invisible when they work:
-
-    * No console window on Windows. CREATE_NO_WINDOW doesn't exist on POSIX, and
-      passing 0 there is accepted and ignored.
-    * UTF-8 output. yt-dlp and ffmpeg write UTF-8 whatever the console codepage
-      is, but `text=True` alone decodes using the locale — cp1252 on a Western
-      Windows install — which turned a Polish title into
-      "WiedÅºmin 3 ... PieÅ›ni przeszÅ‚oÅ›ci" in the log. Only the echoed output
-      was affected, never the files: yt-dlp escapes non-ASCII in the JSON the
-      metadata probe reads, so folder names were always correct. errors=replace
-      because a mangled character must never take down a download.
-    * A killable process group. yt-dlp spawns ffmpeg as a child, so STOP has to
-      take out the whole tree — killing the parent alone leaves ffmpeg running
-      and still writing to the output file. Windows does this at kill time with
-      `taskkill /T`, which walks the tree itself. POSIX has no equivalent, so the
-      group must be established when the process starts: start_new_session puts
-      the child in a fresh process group whose id equals its pid, which
-      os.killpg can then signal as a unit. Set it here or STOP cannot work.
-    """
-    kwargs: dict = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    "encoding": "utf-8", "errors": "replace"}
-    if sys.platform != "win32":
-        kwargs["start_new_session"] = True
-    return kwargs
-
-
-# yt-dlp's post-download stages (merging the video and audio streams), which
-# deserve their own label rather than sitting at "Downloading... 100%".
-_POST_MARKERS = ("[merger]", "[videoconvertor]", "[videoremuxer]", "[fixup",
-                 "[extractaudio]", "[postprocess", "[splitchapters]")
 
 # Clip-length shortcuts: end point = in point + N seconds. These get their own
 # buttons; the longer presets live behind the dropdown arrow.
@@ -101,91 +58,13 @@ WHOLE_VIDEO_HINT = (
 
 YEET_LABEL = "YEET (download & insert)"
 
-QUALITY_OPTIONS = {
-    "Best available": None,
-    "2160p (4K)": 2160,
-    "1440p": 1440,
-    "1080p": 1080,
-    "720p": 720,
-    "480p": 480,
-}
+# The engine reports the Resolve pill as ok/error; these are the colours.
+_LEVEL_COLOURS = {"ok": T.ACCENT, "error": T.DANGER}
+
 
 # --------------------------------------------------------------------------- #
-# Pure helpers
+# Assets
 # --------------------------------------------------------------------------- #
-
-_TS_RE = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d+))?\s*$|^\s*(\d+(?:\.\d+)?)\s*$")
-
-
-def normalize_timestamp(text: str) -> str | None:
-    """Accept 'SS', 'SS.ms', 'MM:SS' or 'HH:MM:SS(.ms)'; return a form yt-dlp's
-    --download-sections understands. None if unparseable."""
-    m = _TS_RE.match(text)
-    if not m:
-        return None
-    if m.group(5) is not None:
-        total = float(m.group(5))
-        h, rem = divmod(total, 3600)
-        mnt, sec = divmod(rem, 60)
-        return f"{int(h):02d}:{int(mnt):02d}:{sec:06.3f}".rstrip("0").rstrip(".")
-    h = int(m.group(1) or 0)
-    mnt, sec, frac = int(m.group(2)), int(m.group(3)), m.group(4)
-    base = f"{h:02d}:{mnt:02d}:{sec:02d}"
-    return f"{base}.{frac}" if frac else base
-
-
-def to_seconds(ts_norm: str) -> float:
-    parts = [float(p) for p in ts_norm.split(":")]
-    while len(parts) < 3:
-        parts.insert(0, 0.0)
-    h, m, s = parts
-    return h * 3600 + m * 60 + s
-
-
-def seconds_to_timestamp(total: float) -> str:
-    """Seconds -> 'MM:SS', or 'HH:MM:SS' once it passes an hour."""
-    total = int(total)
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-
-
-def _video_heights(data: dict) -> list[int]:
-    """Distinct video resolutions a video offers, tallest first.
-
-    Skips audio-only entries (vcodec "none") and formats with no height, e.g.
-    storyboards.
-    """
-    heights = {
-        f.get("height")
-        for f in (data.get("formats") or [])
-        if f.get("height") and f.get("vcodec") not in (None, "none")
-    }
-    return sorted((h for h in heights if isinstance(h, int)), reverse=True)
-
-
-# Resolution first, then AV1 as the tiebreaker. Every download is converted
-# anyway (media.py explains why), so the codec only affects the download: AV1
-# is YouTube's smallest stream at any resolution, and both AV1 and VP9 decode
-# in hardware on the way in. Resolution is never capped.
-#
-# acodec:aac is not optional. Older Resolve builds import Opus silently, and
-# without naming an audio codec yt-dlp picks Opus by preference even when
-# YouTube also offers AAC, which it almost always does. When Opus does arrive
-# it is converted to AAC (media.COPYABLE_AUDIO).
-FORMAT_SORT = "res,vcodec:av01,acodec:aac"
-
-# yt-dlp's intermediate per-stream files, e.g. "<stem>.f313.webm" (video only) and
-# "<stem>.f140.m4a" (audio only), which it merges and then deletes. An interrupted
-# download leaves them behind, and handing one to Resolve gives MEDIA OFFLINE.
-_FRAGMENT_RE = re.compile(r"\.f\d+\.", re.IGNORECASE)
-
-# What yt-dlp writes, before the preparation pass turns it into "<stem>.mp4".
-# Deleted once that succeeds; never handed to Resolve.
-SOURCE_TAG = ".src"
-
-# Containers a finished download can legitimately arrive in.
-MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 
 
 def _asset(name: str) -> str | None:
@@ -237,13 +116,6 @@ def apply_icon(window: tk.Misc) -> None:
         pass
 
 
-def format_selector(max_height: int | None) -> str:
-    """yt-dlp -f expression. Codec preference is handled by FORMAT_SORT."""
-    if max_height is None:
-        return "bv*+ba/b"
-    h = max_height
-    return f"bv*[height<={h}]+ba/b[height<={h}]/b"
-
 
 # --------------------------------------------------------------------------- #
 # App
@@ -251,30 +123,12 @@ def format_selector(max_height: int | None) -> str:
 
 
 class YeetApp:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, engine: Engine | None = None) -> None:
         self.root = root
-        self.log_queue: queue.Queue[str] = queue.Queue()
-        self.busy = False
-        self.ytdlp_cmd: list[str] | None = None
-        self.ffmpeg_path: str | None = None
-        self.ytdlp_version: str | None = None
-        # JavaScript runtime for yt-dlp's YouTube challenge solver, and the
-        # yt-dlp arguments that point at it. Empty when the runtime is missing
-        # or this yt-dlp predates the flags — downloads still go ahead, they
-        # just lose the formats that are behind a challenge.
-        self.deno_path: str | None = None
-        self.deno_version: str | None = None
-        self.js_args: list[str] = []
-        # Cancellation: the event is checked between phases and inside the
-        # download loop; active_proc lets us kill yt-dlp (and its ffmpeg child)
-        # mid-flight rather than waiting for it to finish.
-        self.cancel_event = threading.Event()
-        self.active_proc: subprocess.Popen | None = None
-        self.settings = config.load()
-        self.download_dir = self.settings["download_dir"]
-        self.default_length = self.settings["default_length"]
-        # Hardware AV1 support, probed once ffmpeg is known (see _boot).
-        self.caps: media.Capabilities | None = None
+        self.engine = engine or Engine()
+        # Engine events arrive on worker threads; they're queued here and
+        # drained on the Tk thread by _poll_events.
+        self.events: queue.Queue[dict] = queue.Queue()
         # "Update yt-dlp" lives in the Settings window, which may be closed while
         # an update is still running — hence the nullable reference.
         self.update_btn: T.RoundButton | None = None
@@ -309,8 +163,39 @@ class YeetApp:
         T.apply_titlebar_theme(root)
         root.bind("<FocusIn>", lambda _e: T.apply_titlebar_theme(root), add="+")
 
-        self._poll_log_queue()
-        threading.Thread(target=self._boot, daemon=True).start()
+        # Anything the engine said before we subscribed (nothing, when the
+        # window owns the engine — but a shared one may have a history).
+        for event in list(self.engine.history):
+            self.events.put(event)
+        self.engine.subscribe(self.events.put)
+        self._poll_events()
+        if not self.engine.booted:
+            self.engine.start_boot()
+        else:
+            self._apply_tools(self.engine.tools_info())
+            self._set_busy(self.engine.busy)
+
+    # Engine-owned state the UI reads; kept as properties so the window never
+    # holds a stale copy.
+    @property
+    def download_dir(self) -> str:
+        return self.engine.download_dir
+
+    @property
+    def default_length(self) -> int:
+        return self.engine.default_length
+
+    @property
+    def busy(self) -> bool:
+        return self.engine.busy
+
+    @property
+    def ffmpeg_path(self) -> str | None:
+        return self.engine.ffmpeg_path
+
+    @property
+    def deno_path(self) -> str | None:
+        return self.engine.deno_path
 
     def _fit_height(self, wanted: int) -> int:
         """Clamp a window height to what the screen can actually show.
@@ -335,6 +220,7 @@ class YeetApp:
         return max(floor, min(wanted, usable))
 
     # ---- layout ----------------------------------------------------------- #
+
 
     def _build_ui(self) -> None:
         # Two columns: the controls, and the log docked to their right. Everything
@@ -546,9 +432,76 @@ class YeetApp:
 
     # ---- logging ---------------------------------------------------------- #
 
+
+    # ---- engine events ----------------------------------------------------- #
+
     def log(self, msg: str, tag: str | None = None) -> None:
-        """`tag` forces a log style; without it the style is guessed from the text."""
-        self.log_queue.put((f"[{datetime.now():%H:%M:%S}] {msg}", tag))
+        """Window-side messages go through the engine too, so every front end
+        (and the service's history) sees the same log."""
+        self.engine.log(msg, tag)
+
+    def _poll_events(self) -> None:
+        try:
+            while True:
+                self._on_event(self.events.get_nowait())
+        except queue.Empty:
+            pass
+        self.root.after(100, self._poll_events)
+
+    def _on_event(self, ev: dict) -> None:
+        """Apply one engine event to the widgets. Runs on the Tk thread."""
+        kind = ev["kind"]
+        if kind == "log":
+            self._append_log(ev["text"], ev.get("tag"))
+        elif kind == "progress":
+            if ev.get("fraction") is not None:
+                self.progress.set(ev["fraction"])
+            if ev.get("step") is not None:
+                self.step_var.set(ev["step"])
+        elif kind == "resolve":
+            self.status.set(ev["text"], _LEVEL_COLOURS.get(ev["level"], T.DANGER))
+        elif kind == "busy":
+            self._set_busy(ev["busy"])
+        elif kind == "tools":
+            self._apply_tools(ev)
+        elif kind == "tool_busy":
+            btn = {"ytdlp": self.update_btn, "ffmpeg": self.ffmpeg_btn,
+                   "js": self.js_btn}.get(ev["tool"])
+            # Safe even if the Settings window has since been closed.
+            if btn is not None and btn.winfo_exists():
+                btn.set_enabled(not ev["busy"])
+        elif kind == "reveal_log":
+            self.reveal_log()
+
+    def _append_log(self, line: str, tag: str | None) -> None:
+        if tag is None:
+            low = line.lower()
+            tag = "bad" if ("error" in low or "warning" in low or "resolve:" in low) else \
+                  "accent" if ("ready" in low or "done" in low or "inserted" in low) else ""
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", line + "\n", tag)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def _apply_tools(self, info: dict) -> None:
+        self.ytdlp_info_var.set(info["ytdlp"])
+        self.ffmpeg_info_var.set(info["ffmpeg"])
+        self.caps_info_var.set(info["video"])
+        self.js_info_var.set(info["js"])
+
+    def _set_busy(self, busy: bool) -> None:
+        if busy:
+            # Stays clickable — that click is how you stop it.
+            self.yeet_btn.set_text("STOP")
+            self.yeet_btn.set_style(fill=T.DANGER, fg=T.ACCENT_TEXT, icon=None)
+        else:
+            self.yeet_btn.set_text(YEET_LABEL)
+            self.yeet_btn.set_style(fill=T.ACCENT, fg=T.ACCENT_TEXT, icon="drop")
+        self.yeet_btn.set_enabled(True)
+        # Only one job at a time; STOP lives on the primary button.
+        self.dl_btn.set_enabled(not busy)
+
+    # ---- log panel --------------------------------------------------------- #
 
     def toggle_log(self) -> None:
         """Show/hide the log panel beside the controls.
@@ -591,321 +544,19 @@ class YeetApp:
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
 
-    def _poll_log_queue(self) -> None:
-        try:
-            while True:
-                line, tag = self.log_queue.get_nowait()
-                if tag is None:
-                    low = line.lower()
-                    tag = "bad" if ("error" in low or "warning" in low or "resolve:" in low) else \
-                          "accent" if ("ready" in low or "done" in low or "inserted" in low) else ""
-                self.log_text.configure(state="normal")
-                self.log_text.insert("end", line + "\n", tag)
-                self.log_text.see("end")
-                self.log_text.configure(state="disabled")
-        except queue.Empty:
-            pass
-        self.root.after(100, self._poll_log_queue)
-
-    # ---- progress (safe to call from worker threads) ----------------------- #
-
-    def _progress(self, fraction: float | None = None, step: str | None = None) -> None:
-        def apply() -> None:
-            if fraction is not None:
-                self.progress.set(fraction)
-            if step is not None:
-                self.step_var.set(step)
-        self.root.after(0, apply)
-
-    # ---- connection status ------------------------------------------------- #
+    # ---- connection / tools (delegated) ------------------------------------ #
 
     def refresh_connection(self) -> None:
-        threading.Thread(target=self._check_connection, daemon=True).start()
-
-    def _check_connection(self, quiet: bool = False) -> bool:
-        """Report what we can actually see: Resolve, the project, the timeline."""
-        try:
-            info = resolve_bridge.get_timeline_info()
-        except resolve_bridge.ResolveError as e:
-            msg = str(e)
-            # Distinguish "Resolve isn't there" from "Resolve is there but has
-            # nothing open" — they need different fixes.
-            if "timeline" in msg.lower():
-                self._set_status("no timeline open", T.DANGER)
-            elif "project" in msg.lower():
-                self._set_status("no project open", T.DANGER)
-            else:
-                self._set_status("Resolve not connected", T.DANGER)
-            if not quiet:
-                self.log(f"RESOLVE: {msg}")
-            return False
-        except Exception as e:  # noqa: BLE001
-            self._set_status("Resolve error", T.DANGER)
-            if not quiet:
-                self.log(f"RESOLVE: unexpected problem — {e}")
-            return False
-
-        self._set_status(f"{info['project']} · {info['timeline']}", T.ACCENT)
-        if not quiet:
-            self.log(f"Resolve ready: '{info['timeline']}' @ {info['fps']}fps, "
-                     f"playhead {info['currentTimecode']}")
-        return True
-
-    def _set_status(self, text: str, colour: str) -> None:
-        self.root.after(0, lambda: self.status.set(text, colour))
-
-
-    # ---- yt-dlp update ----------------------------------------------------- #
-
-    def _ytdlp_info_text(self) -> str:
-        where = " ".join(self.ytdlp_cmd) if self.ytdlp_cmd else "not found"
-        return f"{self.ytdlp_version or '?'}  —  {where}"
-
-    def _enable_update_btn(self, enabled: bool) -> None:
-        """Safe even if the Settings window has since been closed."""
-        def apply() -> None:
-            btn = self.update_btn
-            if btn is not None and btn.winfo_exists():
-                btn.set_enabled(enabled)
-        self.root.after(0, apply)
+        self.engine.refresh_connection()
 
     def on_update_ytdlp(self) -> None:
-        if self.busy or not self.ytdlp_cmd:
-            return
-        threading.Thread(target=self._update_ytdlp, daemon=True).start()
-
-    # ---- ffmpeg install (macOS) -------------------------------------------- #
-
-    def _enable_ffmpeg_btn(self, enabled: bool) -> None:
-        """Safe even if the Settings window has since been closed."""
-        def apply() -> None:
-            btn = self.ffmpeg_btn
-            if btn is not None and btn.winfo_exists():
-                btn.set_enabled(enabled)
-        self.root.after(0, apply)
+        self.engine.start_update_ytdlp()
 
     def on_install_ffmpeg(self) -> None:
-        if self.busy:
-            return
-        threading.Thread(target=self._install_ffmpeg, daemon=True).start()
-
-    def _install_ffmpeg(self) -> None:
-        """Hand off to Homebrew, then adopt the result without a restart."""
-        self._enable_ffmpeg_btn(False)
-        self.reveal_log()   # brew is chatty and slow; the user should see it working
-        try:
-            self.ffmpeg_path = deps.install_ffmpeg_via_brew(self.log)
-            self.root.after(0, lambda: self.ffmpeg_info_var.set(self.ffmpeg_path or ""))
-            self.log("ffmpeg is ready — no restart needed.")
-            self._probe_hardware()
-            # The boot sequence gives up on a missing ffmpeg and leaves the
-            # action buttons disabled; now that it's here, let them back in.
-            if self.ytdlp_cmd:
-                self.root.after(0, lambda: self._set_busy(False))
-                self._check_connection()
-        except Exception as e:  # noqa: BLE001 — message is written for the log
-            self.log(f"ERROR: {e}")
-            self._enable_ffmpeg_btn(True)
-
-    # ---- JavaScript runtime ------------------------------------------------ #
-
-    def _js_info_text(self) -> str:
-        """Reads the cached version rather than probing: Settings builds this on
-        the UI thread, and spawning deno there would stall the window opening."""
-        if not self.deno_path:
-            return "not found"
-        return f"deno {self.deno_version or '?'}  —  {self.deno_path}"
-
-    def _set_js_info(self, text: str) -> None:
-        self.root.after(0, lambda: self.js_info_var.set(text))
-
-    def _enable_js_btn(self, enabled: bool) -> None:
-        """Safe even if the Settings window has since been closed."""
-        def apply() -> None:
-            btn = self.js_btn
-            if btn is not None and btn.winfo_exists():
-                btn.set_enabled(enabled)
-        self.root.after(0, apply)
+        self.engine.start_install_ffmpeg()
 
     def on_install_js(self) -> None:
-        if self.busy:
-            return
-        threading.Thread(target=self._install_js, daemon=True).start()
-
-    def _install_js(self) -> None:
-        """Fetch Deno on demand, from Settings, and adopt it without a restart."""
-        self._enable_js_btn(False)
-        self.reveal_log()   # it's a ~40 MB download; show that something is happening
-        if self._setup_js_runtime():
-            self.log("JavaScript runtime ready — no restart needed.")
-        else:
-            self._enable_js_btn(True)
-
-    def _ytdlp_help(self) -> str:
-        """yt-dlp's --help text, for checking whether a flag exists.
-
-        Probed rather than inferred from the version string: the EJS flags
-        arrived in a particular release, but yt-dlp can also come from a distro
-        package or a pip install whose version doesn't map cleanly onto one.
-        Asking it what it supports can't be wrong.
-        """
-        try:
-            proc = subprocess.run([*(self.ytdlp_cmd or []), "--help"],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, timeout=60, **_spawn_kwargs())
-            return proc.stdout or ""
-        except Exception:  # noqa: BLE001 — treat unreadable help as "no flags"
-            return ""
-
-    def _setup_js_runtime(self) -> bool:
-        """Find or fetch Deno and build the yt-dlp arguments that point at it.
-
-        YouTube serves its formats behind a JavaScript challenge; yt-dlp solves
-        it by running solver scripts in an external runtime. Without one, some
-        videos come back missing formats and others don't download at all. See
-        https://github.com/yt-dlp/yt-dlp/wiki/EJS
-
-        Never fatal — a download without a runtime is degraded, not impossible,
-        so a failure here leaves the app usable and says what to do about it.
-        Returns whether a runtime is now in use.
-        """
-        self.js_args = []
-        help_text = self._ytdlp_help()
-        if "--js-runtimes" not in help_text:
-            self.log("NOTE: this yt-dlp predates YouTube's JavaScript challenge "
-                     "support.")
-            self.log("      Press 'Update yt-dlp' in Settings if downloads start "
-                     "failing.")
-            self._set_js_info("unused — yt-dlp too old")
-            return False
-
-        try:
-            self.deno_path = deps.ensure_deno(self.log)
-        except Exception as e:  # noqa: BLE001 — message is written for the log
-            self.log(f"WARNING: no JavaScript runtime — {e}")
-            self.log("  YouTube may refuse some formats until one is available.")
-            self.log("  Retry from Settings, or install Deno yourself: "
-                     "https://deno.com")
-            self._set_js_info("not found")
-            return False
-
-        self.deno_version = deps.deno_version(self.deno_path)
-        args = ["--js-runtimes", f"deno:{self.deno_path}"]
-        if "--remote-components" in help_text:
-            # Last-resort source for the solver scripts, used only when the
-            # copies bundled with yt-dlp are missing or too old for the challenge
-            # YouTube is currently serving — which is exactly the case where a
-            # video would otherwise refuse to download. yt-dlp checks what it
-            # fetches against its own hash allowlist before running it, and Deno
-            # runs it with no filesystem or network access.
-            args += ["--remote-components", "ejs:github"]
-        self.js_args = args
-        self._set_js_info(self._js_info_text())
-        return True
-
-    def _run_logged(self, args: list[str]) -> tuple[int, str]:
-        """Run a command, stream it to the log, and return (exit code, output)."""
-        self.log("Running: " + " ".join(args))
-        proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            bufsize=1, **_spawn_kwargs())
-        assert proc.stdout is not None
-        lines: list[str] = []
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                lines.append(line)
-                self.log(f"  {line}")
-        return proc.wait(), "\n".join(lines)
-
-    @staticmethod
-    def _is_pip_install(output: str) -> bool:
-        """Whether a failed `-U` was refused because pip owns this copy.
-
-        yt-dlp's exact wording is "You installed yt-dlp with pip or using the
-        wheel from PyPi; Use that to update", so match on the durable part
-        rather than the whole sentence — and note PyPi's unconventional casing,
-        which is why this is case-insensitive.
-        """
-        low = output.lower()
-        return "with pip" in low or "wheel from pypi" in low
-
-    @staticmethod
-    def _interpreter_for(script: str) -> str | None:
-        """The Python that owns a pip console script, or None.
-
-        pip drops `yt-dlp.exe` in `<prefix>\\Scripts` on Windows and `yt-dlp` in
-        `<prefix>/bin` elsewhere, with the interpreter one step away in both
-        layouts. Derived from the script's own path rather than sys.executable,
-        which in a frozen build is YEETingus itself — running `-m pip` on that
-        would relaunch the app instead of upgrading anything.
-        """
-        bindir = os.path.dirname(os.path.abspath(script))
-        candidates = ([os.path.join(os.path.dirname(bindir), "python.exe"),
-                       os.path.join(bindir, "python.exe")] if sys.platform == "win32"
-                      else [os.path.join(bindir, "python3"),
-                            os.path.join(bindir, "python")])
-        return next((p for p in candidates if os.path.isfile(p)), None)
-
-    def _update_ytdlp(self) -> None:
-        """Update yt-dlp by whichever route actually owns this copy.
-
-        Three ways it can be installed, and they don't update the same way:
-
-          * a standalone binary, which self-updates with -U;
-          * `python -m yt_dlp`, which pip owns;
-          * a **pip console script**, which looks exactly like a standalone
-            binary from here — same single path, same name — but refuses -U with
-            "You installed yt-dlp with pip... Use that to update" and exit 100.
-
-        That third case used to dead-end: the button reported the exit code and
-        stopped, with no hint that pip was the answer, while a stale yt-dlp is
-        the single most common reason downloads start failing. So a -U refusal
-        is now detected and retried through pip automatically.
-        """
-        self._enable_update_btn(False)
-        try:
-            cmd = list(self.ytdlp_cmd or [])
-            if not cmd:
-                self.log("ERROR: yt-dlp isn't resolved yet; nothing to update.")
-                return
-
-            before = self.ytdlp_version
-            if len(cmd) > 1:
-                # Already `python -m yt_dlp`: pip owns it, and cmd[0] is the
-                # interpreter to use.
-                code, _ = self._run_logged([cmd[0], "-m", "pip", "install",
-                                            "-U", "yt-dlp"])
-            else:
-                code, out = self._run_logged(cmd + ["-U"])
-                if code != 0 and self._is_pip_install(out):
-                    self.log("This yt-dlp was installed with pip, which can't "
-                             "self-update. Retrying through pip…")
-                    python = self._interpreter_for(cmd[0])
-                    if python:
-                        code, _ = self._run_logged([python, "-m", "pip",
-                                                    "install", "-U", "yt-dlp"])
-                    else:
-                        self.log("ERROR: couldn't find the Python that owns "
-                                 f"{cmd[0]}.")
-                        self.log("  Update it yourself with:  pip install -U yt-dlp")
-
-            if code == 0:
-                self.ytdlp_version = self._probe_version()
-                now = self.ytdlp_version or "?"
-                self.log(f"yt-dlp is now {now}."
-                         + ("  (unchanged — it was already current)"
-                            if before and before == self.ytdlp_version else ""))
-                self.root.after(0, lambda: self.ytdlp_info_var.set(self._ytdlp_info_text()))
-            else:
-                self.log(f"ERROR: updating yt-dlp failed (exit {code}). See above.")
-                self.log("  Fix it by hand with:  pip install -U yt-dlp")
-                self.log("  Or delete the copy YEETingus is using and reopen the "
-                         "app — it will download its own.")
-        except Exception as e:  # noqa: BLE001
-            self.log(f"ERROR updating yt-dlp: {e}")
-        finally:
-            self._enable_update_btn(True)
+        self.engine.start_install_js()
 
     # ---- settings ---------------------------------------------------------- #
 
@@ -1026,14 +677,7 @@ class YeetApp:
         ib = info.body
         T.step_header(ib, 3, "Tools").pack(anchor="w", pady=(0, 14))
         # Live vars so an update performed from this window refreshes in place.
-        self.ytdlp_info_var.set(self._ytdlp_info_text())
-        self.ffmpeg_info_var.set(self.ffmpeg_path or "not found")
-        self.caps_info_var.set(self.caps.describe() if self.caps else "not checked")
-        # Only when there's a runtime to describe: otherwise the var already
-        # holds the reason from startup ("not found" / "yt-dlp too old"), which
-        # is more use than recomputing "not found" here.
-        if self.deno_path:
-            self.js_info_var.set(self._js_info_text())
+        self._apply_tools(self.engine.tools_info())
         for label, var in (("yt-dlp", self.ytdlp_info_var),
                            ("ffmpeg", self.ffmpeg_info_var),
                            ("video", self.caps_info_var),
@@ -1131,23 +775,19 @@ class YeetApp:
             except OSError as e:
                 self.log(f"ERROR: can't use that folder — {e}")
                 return
-            self.settings["download_dir"] = new_dir
-            self.download_dir = new_dir
 
             try:
                 length = int(length_var.get())
             except ValueError:
                 length = config.DEFAULTS["default_length"]
-            self.settings["default_length"] = length
-            self.default_length = length
 
             try:
-                path = config.save(self.settings)
-                self.log(f"Clips → {new_dir}")
-                self.log(f"Default clip length → {seconds_to_timestamp(length)} "
-                         "(applied when the app opens)")
-                self.log(f"Settings saved to {path}")
-            except OSError as e:
+                if self.engine.update_settings(download_dir=new_dir,
+                                               default_length=length):
+                    self.log(f"Clips → {new_dir}")
+                    self.log(f"Default clip length → {seconds_to_timestamp(length)} "
+                             "(applied when the app opens)")
+            except (OSError, ValueError) as e:
                 self.log(f"ERROR saving settings: {e}")
             win.destroy()
 
@@ -1177,72 +817,6 @@ class YeetApp:
 
     # ---- startup ---------------------------------------------------------- #
 
-    def _boot(self) -> None:
-        """Resolve dependencies and check Resolve, off the UI thread."""
-        self.log(f"{APP_NAME} {__version__} starting…")
-        self.log(f"Clips → {self.download_dir}")
-
-        # Resolved separately rather than via ensure_all, so a missing ffmpeg
-        # doesn't also throw away a perfectly good yt-dlp: on macOS ffmpeg is the
-        # user's to install, and the Settings button that installs it needs
-        # ytdlp_cmd already recorded to pick up where this left off.
-        try:
-            self.ytdlp_cmd = deps.ensure_ytdlp(self.log)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"ERROR getting yt-dlp: {e}")
-            self._set_status("missing tools", T.DANGER)
-            return
-
-        try:
-            self.ffmpeg_path = deps.ensure_ffmpeg(self.log)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"ERROR: {e}")
-            self._set_status("ffmpeg missing", T.DANGER)
-            self.reveal_log()
-            if deps.MACOS_FFMPEG_MANUAL:
-                self.log("Open Settings to install it, or run the command above.")
-            return
-
-        self.ytdlp_version = self._probe_version()
-        self._probe_hardware()
-        # After yt-dlp, because it asks yt-dlp which flags it understands, and
-        # non-fatal by design — see _setup_js_runtime.
-        self._setup_js_runtime()
-        runtime = f" · deno {self.deno_version or '?'}" if self.deno_path else ""
-        self.log(f"yt-dlp {self.ytdlp_version or '?'} ready · "
-                 f"ffmpeg {os.path.basename(self.ffmpeg_path or '?')}{runtime}")
-        self.root.after(0, lambda: self.ytdlp_info_var.set(self._ytdlp_info_text()))
-
-        self._check_connection()
-        # Both action buttons start disabled until the tools are resolved; go
-        # through _set_busy(False) so neither is forgotten.
-        self.root.after(0, lambda: self._set_busy(False))
-
-    def _probe_hardware(self) -> None:
-        """Find out what the preparation pass can use on this machine.
-
-        A second or so of tiny test encodes/decodes; done once at startup and
-        after an ffmpeg install. Never fatal — with nothing found, everything
-        still works through the CPU path.
-        """
-        if not self.ffmpeg_path:
-            return
-        try:
-            self.caps = media.probe_capabilities(self.ffmpeg_path)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"Hardware check failed ({e}); using the CPU path.")
-            self.caps = media.Capabilities()
-        self.log(f"Video: {self.caps.describe()}")
-        self.root.after(0, lambda: self.caps_info_var.set(self.caps.describe()))
-
-    def _probe_version(self) -> str | None:
-        try:
-            proc = subprocess.run([*(self.ytdlp_cmd or []), "--version"],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, timeout=30, **_spawn_kwargs())
-            return (proc.stdout or "").strip().splitlines()[-1] if proc.returncode == 0 else None
-        except Exception:  # noqa: BLE001
-            return None
 
     # ---- actions ---------------------------------------------------------- #
 
@@ -1387,54 +961,19 @@ class YeetApp:
         self._auto_ts_url = url
         self._apply_link_timestamp(seconds, auto=False)
 
-    def _collect_job(self) -> tuple[str, str | None, str | None] | None:
-        """Validate the form. Returns (url, start, end) or None after logging why.
 
-        start/end come back as None for "whole video", which is what both points
-        sitting at zero means.
-        """
-        if not self.ytdlp_cmd:
-            self.log("ERROR: yt-dlp isn't available yet.")
-            return None
-
-        url = self.url_var.get().strip()
-        if not url:
-            self.log("ERROR: no video link.")
-            return None
-
-        start = normalize_timestamp(self.in_var.get())
-        end = normalize_timestamp(self.out_var.get())
-        if start is None or end is None:
-            self.log("ERROR: in/end point must be SS, MM:SS or HH:MM:SS.")
-            return None
-
-        if to_seconds(start) == 0 and to_seconds(end) == 0:
-            return url, None, None          # no section -> entire video
-
-        if to_seconds(end) <= to_seconds(start):
-            self.log("ERROR: end point must be after in point "
-                     "(or set both to 00:00 for the whole video).")
-            return None
-        return url, start, end
+    # ---- jobs ------------------------------------------------------------- #
 
     def _start_job(self, insert: bool) -> None:
-        job = self._collect_job()
-        if job is None:
-            return
-        url, start, end = job
-        self.cancel_event.clear()
-        self._set_busy(True)
-        threading.Thread(
-            target=self._worker,
-            args=(url, start, end, QUALITY_OPTIONS[self.quality_var.get()],
-                  self.insert_var.get(), insert),
-            daemon=True,
-        ).start()
+        self.engine.start_job(
+            self.url_var.get(), self.in_var.get(), self.out_var.get(),
+            QUALITY_OPTIONS[self.quality_var.get()], self.insert_var.get(),
+            insert=insert)
 
     def on_yeet(self) -> None:
         # The same button stops the job while one is running.
         if self.busy:
-            self.on_stop()
+            self.engine.cancel()
             return
         self._start_job(insert=True)
 
@@ -1443,692 +982,6 @@ class YeetApp:
         if self.busy:
             return
         self._start_job(insert=False)
-
-    def on_stop(self) -> None:
-        if not self.busy or self.cancel_event.is_set():
-            return
-        self.cancel_event.set()
-        self.log("Stopping…")
-        self._progress(step="Stopping…")
-        self._kill_active()
-
-    def _kill_active(self) -> None:
-        """Kill the running tool and everything it spawned.
-
-        yt-dlp spawns ffmpeg, so the whole tree has to go — killing only the
-        parent leaves ffmpeg running, still holding and writing the output file,
-        which then can't be cleaned up.
-
-        Windows walks the tree at kill time with `taskkill /T`. POSIX signals the
-        process group that _spawn_kwargs established, giving it a SIGTERM to
-        close its files before escalating to SIGKILL.
-        """
-        proc = self.active_proc
-        if not proc or proc.poll() is not None:
-            return
-        try:
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    timeout=20,
-                )
-            else:
-                try:
-                    group = os.getpgid(proc.pid)
-                except (ProcessLookupError, PermissionError):
-                    # Already reaped, or not ours after all — fall back to the
-                    # single process rather than signalling a group we don't own.
-                    proc.kill()
-                    return
-                os.killpg(group, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # exited between the poll above and the signal; nothing to do
-        except Exception as e:  # noqa: BLE001
-            self.log(f"Couldn't stop the process cleanly: {e}")
-
-    def _cancelled(self) -> bool:
-        return self.cancel_event.is_set()
-
-    def _set_busy(self, busy: bool) -> None:
-        self.busy = busy
-        if busy:
-            # Stays clickable — that click is how you stop it.
-            self.yeet_btn.set_text("STOP")
-            self.yeet_btn.set_style(fill=T.DANGER, fg=T.ACCENT_TEXT, icon=None)
-        else:
-            self.yeet_btn.set_text(YEET_LABEL)
-            self.yeet_btn.set_style(fill=T.ACCENT, fg=T.ACCENT_TEXT, icon="drop")
-        self.yeet_btn.set_enabled(True)
-        # Only one job at a time; STOP lives on the primary button.
-        self.dl_btn.set_enabled(not busy)
-
-    def _probe_metadata(self, url: str) -> dict:
-        """Look up id/title/channel before downloading, so the clip can be filed
-        under a descriptive folder. Best effort — a failure just means a plainer
-        folder name, not a failed download."""
-        self.log("Reading video info…")
-        cmd = [*(self.ytdlp_cmd or []), *self.js_args,
-               "--dump-single-json", "--no-warnings",
-               "--skip-download", "--no-playlist", url]
-        try:
-            # Popen (not run) so STOP can kill it mid-lookup.
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                **_spawn_kwargs(),
-            )
-            self.active_proc = proc
-            out, err = proc.communicate(timeout=120)
-            self.active_proc = None
-            if self._cancelled():
-                return {"id": "", "title": "", "channel": "", "heights": [],
-                        "duration": None}
-            proc = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
-            if proc.returncode == 0 and (proc.stdout or "").strip():
-                data = json.loads(proc.stdout)
-                return {
-                    "id": data.get("id") or "",
-                    "title": data.get("title") or "",
-                    "channel": data.get("channel") or data.get("uploader") or "",
-                    "heights": _video_heights(data),
-                    # None for a livestream, and absent on some extractors.
-                    "duration": data.get("duration"),
-                }
-            tail = (proc.stderr or "").strip().splitlines()
-            self.log("Couldn't read video info; falling back to the URL id.")
-            if tail:
-                self.log(f"  {tail[-1]}")
-        except Exception as e:  # noqa: BLE001
-            self.log(f"Video info lookup failed: {e}")
-        return {"id": naming.video_id_from_url(url), "title": "", "channel": "",
-                "heights": [], "duration": None}
-
-    def _probe_media(self, path: str) -> media.SourceInfo | None:
-        """What is actually on disk (codec, size, rate, timing), or None."""
-        ffprobe = deps.find_ffprobe()
-        if not ffprobe:
-            return None
-        try:
-            return media.probe(ffprobe, path)
-        except Exception:  # noqa: BLE001 — a missing detail isn't worth failing over
-            return None
-
-    @staticmethod
-    def _existing_download(folder: str, stem: str, raw: bool = False) -> str | None:
-        """A finished download for `stem`, or None.
-
-        Skips yt-dlp's scratch files and zero-byte remnants, so an interrupted
-        attempt is never mistaken for a complete one — that would insert a broken
-        file instead of re-downloading. The raw "<stem>.src.*" download is
-        skipped too unless `raw` is set, which is how _download finds it.
-        """
-        try:
-            names = os.listdir(folder)
-        except OSError:
-            return None
-        # Prefer the merged mp4, then any other container.
-        for name in sorted(names, key=lambda n: (not n.endswith(".mp4"), n)):
-            if not name.startswith(stem + "."):
-                continue
-            if name.endswith((".part", ".ytdl", ".temp")):
-                continue
-            # A leftover per-stream fragment is video-only or audio-only; treating
-            # one as a finished download is what put MEDIA OFFLINE on the timeline.
-            # The raw download (".src.") is likewise not the finished file.
-            if _FRAGMENT_RE.search(name) or (not raw and (SOURCE_TAG + ".") in name):
-                continue
-            if not name.lower().endswith(MEDIA_EXTS):
-                continue
-            path = os.path.join(folder, name)
-            try:
-                if os.path.isfile(path) and os.path.getsize(path) > 0:
-                    return path
-            except OSError:
-                continue
-        return None
-
-    def _looks_complete(self, path: str, meta: dict) -> bool:
-        """Whether an existing whole-video file actually holds the whole video.
-
-        The reuse check accepts any non-empty media file with the right name,
-        which is fine until a download dies partway: ffmpeg can leave a valid
-        but truncated .mp4 behind, and if cleanup couldn't delete it — Windows
-        won't unlink a file the dying ffmpeg still holds — every later attempt
-        reports "Already downloaded" and hands Resolve 40 seconds of a
-        10-minute video, forever.
-
-        So the file's own duration is compared against the video's. Anything
-        materially short is treated as unfinished. Unknown either way means we
-        can't judge, and the file is trusted rather than thrown away: a needless
-        re-download of a whole video is expensive.
-        """
-        wanted = meta.get("duration")
-        if not isinstance(wanted, (int, float)) or wanted <= 0:
-            return True
-        actual = self._stream_duration(path)
-        if actual is None:
-            # ffprobe couldn't read it at all, which a badly truncated file does.
-            self.log("  That file can't be read back; treating it as unfinished.")
-            return False
-        # 5% or two seconds of slack, whichever is larger: a container's own
-        # duration rarely matches the metadata to the frame.
-        if actual + max(2.0, wanted * 0.05) < wanted:
-            self.log(f"  It holds only {seconds_to_timestamp(round(actual))} of "
-                     f"{seconds_to_timestamp(round(wanted))} — unfinished.")
-            return False
-        return True
-
-    def _check_range(self, start: str | None, end: str | None,
-                     meta: dict) -> tuple[str | None, str | None] | None:
-        """Reconcile the requested section with the video's actual length.
-
-        Asking for a range past the end used to reach ffmpeg, which computed a
-        negative duration and emitted twenty lines of filter-graph noise ending
-        in "ffmpeg exited with code 4294967262" — plus a 0-byte .part file. None
-        of that says "your in point is after the end of the video".
-
-        Returns the (possibly trimmed) range, or None if there is nothing to
-        download. A whole-video request and an unknown duration both pass
-        straight through — livestreams report no duration, and there is nothing
-        to check against.
-        """
-        if start is None or end is None:
-            return start, end
-        duration = meta.get("duration")
-        if not isinstance(duration, (int, float)) or duration <= 0:
-            return start, end
-
-        length = seconds_to_timestamp(round(duration))
-        if to_seconds(start) >= duration:
-            self.log(f"ERROR: the in point ({start}) is past the end of this "
-                     f"video, which is {length} long.")
-            self.log("       Pick an in point inside the video and try again.")
-            return None
-
-        if to_seconds(end) > duration:
-            self.log(f"NOTE: the end point is past the end of this video "
-                     f"({length}); trimming the request to there.")
-            # Back through normalize_timestamp so the trimmed value is in the
-            # same HH:MM:SS form as the one the user typed — --download-sections
-            # takes a single "*start-end" string, and mixing "00:00:60.00" with
-            # "01:15" inside it is asking for a parsing surprise.
-            end = normalize_timestamp(seconds_to_timestamp(round(duration))) or end
-        return start, end
-
-    def _explain_403(self, got_bytes: bool, age_gated: bool) -> None:
-        """Say what a 403 actually means here, and what to do about it.
-
-        This used to read "403 means YouTube refused that format's URL. Try
-        'Best available', or hit 'Update yt-dlp'." — which buried the real cause
-        behind a suggestion that cannot help. Changing quality does nothing when
-        every format is refused, and an out-of-date yt-dlp is far and away the
-        common case: YouTube changes its signing regularly and a yt-dlp from
-        even a few weeks earlier stops being able to fetch anything.
-
-        The two shapes look different in the log and are worth telling apart:
-
-          * nothing downloaded at all — the URL was rejected outright. For a
-            clip that is usually ffmpeg fetching the byte range, since it can't
-            reproduce the headers those URLs are bound to.
-          * it got part-way, then 403 — reads like a dropped connection, but is
-            the same stale-extractor problem showing up mid-transfer.
-        """
-        version = self.ytdlp_version or "unknown"
-        if age_gated:
-            self.log("WHY: YouTube refused this video (403) because it is age "
-                     "restricted.")
-            self.log("     That needs a signed-in session, which YEETingus "
-                     "doesn't use. Nothing to fix.")
-            return
-
-        if got_bytes:
-            self.log("WHY: the download started, then YouTube refused the rest "
-                     "with 403.")
-            self.log("     That looks like a dropped connection but usually "
-                     "isn't — it's the same")
-            self.log("     out-of-date yt-dlp problem as an outright refusal.")
-        else:
-            self.log("WHY: YouTube refused the video URL outright (403). Not a "
-                     "resolution problem —")
-            self.log("     changing quality won't help, because every format is "
-                     "refused the same way.")
-
-        self.log(f"FIX: update yt-dlp. Yours is {version}, and YouTube breaks "
-                 "older ones regularly.")
-        self.log("     Settings -> Update yt-dlp, then try again.")
-        self.log("     (If the update itself fails, the log there says how to "
-                 "finish it by hand.)")
-        self.log("Still failing on a freshly updated yt-dlp? Age-restricted "
-                 "videos always 403 —")
-        self.log("  they need a signed-in session. Otherwise it's worth "
-                 "reporting.")
-
-    def _prepare(self, raw: str, section: media.Section | None) -> str | None:
-        """Turn the raw download into the file Resolve gets (media.py decides
-        how). Returns the finished path, or None on failure or cancellation.
-
-        A file that is already the finished "<stem>.mp4" — a reused whole video,
-        including one made by an older version — passes straight through.
-        """
-        if (SOURCE_TAG + ".") not in os.path.basename(raw):
-            return raw
-
-        ffmpeg = self.ffmpeg_path or deps.find_ffmpeg()
-        info = self._probe_media(raw)
-        if not ffmpeg or info is None:
-            self.log("ERROR: can't read the download back; nothing to prepare.")
-            return None
-        if self.caps is None:
-            self._probe_hardware()
-        caps = self.caps or media.Capabilities()
-
-        plan = media.plan(info, caps, section)
-        media.assert_allowed_encoder(plan)
-        out = media.output_path_for(raw.replace(SOURCE_TAG + ".", "."), plan)
-        tmp = f"{os.path.splitext(out)[0]}.tmp.{plan.container}"
-        cmd = media.build_command(ffmpeg, info, plan, tmp)
-
-        self.log(f"Downloaded: {info.describe()}")
-        self.log(f"Preparing: converting with {plan.encoder} "
-                 f"(keyframe every {plan.gop} frames) so Resolve scrubs it well.")
-        estimate = media.estimate_seconds(info, plan, section)
-        rough = "a few seconds" if estimate < 15 else (
-            "under a minute" if estimate < 60 else f"around {estimate / 60:.0f} min")
-        self.log(f"  Expect {rough}. STOP still works.")
-        for note in plan.notes:
-            self.log(f"  {note}")
-
-        # The span the progress bar counts down: the section, or the whole file.
-        total = info.duration
-        if section and section.end is not None:
-            total = section.end - section.start
-        self._progress(P_DOWNLOAD, "Preparing…")
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, bufsize=1, **_spawn_kwargs())
-        self.active_proc = proc
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            if self._cancelled():
-                break
-            m = _FFMPEG_TIME_RE.match(line)
-            if m and total > 0:
-                done = min(int(m.group(1)) / 1_000_000 / total, 1.0)
-                self._progress(P_DOWNLOAD + (P_PREPARE - P_DOWNLOAD) * done,
-                               f"Preparing… {done * 100:.0f}%")
-        _, err = proc.communicate()
-        self.active_proc = None
-
-        if self._cancelled() or proc.returncode != 0:
-            if proc.returncode != 0 and not self._cancelled():
-                self.log(f"Preparation failed (exit {proc.returncode}).")
-                for l in (err or "").strip().splitlines()[-4:]:
-                    self.log(f"  {l}")
-                if plan.hardware:
-                    # A hardware encoder that passed its probe can still fail on
-                    # real footage (driver limits, odd dimensions). Retry on CPU
-                    # rather than leave the user with nothing.
-                    self.log("  Retrying with the CPU encoder…")
-                    self.caps = media.Capabilities(av1_encoder=None)
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
-                    return self._prepare(raw, section)
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            return None
-
-        try:
-            os.replace(tmp, out)
-        except OSError as e:
-            self.log(f"Prepared fine but couldn't move the result into place: {e}")
-            return None
-        try:
-            os.remove(raw)
-        except OSError:
-            self.log(f"  (couldn't delete the raw download {os.path.basename(raw)})")
-
-        self._progress(P_PREPARE, "Prepared")
-        return out
-
-    def _stream_duration(self, path: str) -> float | None:
-        """Container duration in seconds, for the reuse completeness check."""
-        ffprobe = deps.find_ffprobe()
-        if not ffprobe:
-            return None
-        try:
-            proc = subprocess.run(
-                [ffprobe, "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=nw=1:nk=1", path],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                timeout=60, **_spawn_kwargs())
-            return float((proc.stdout or "").strip())
-        except Exception:  # noqa: BLE001 — no duration just means a vaguer bar
-            return None
-
-    def _resolve_quality(self, max_height: int | None, meta: dict) -> int | None:
-        """Reconcile the requested cap with what the video actually offers.
-
-        Asking for 4K on a 1080p upload used to just fail; now we say what the
-        video has and fall back to its best instead.
-        """
-        heights = meta.get("heights") or []
-        if not heights:
-            self.log("Couldn't read available formats; trying your selection as-is.")
-            return max_height
-
-        self.log("Available: " + ", ".join(f"{h}p" for h in heights))
-        best = heights[0]
-
-        if max_height is None:
-            self.log(f"Using best available ({best}p).")
-            return None
-
-        if max_height > best:
-            self.log(f"NOTE: {max_height}p isn't available for this video — "
-                     f"the highest is {best}p. Using {best}p instead.")
-            return best
-
-        chosen = next((h for h in heights if h <= max_height), best)
-        self.log(f"Using {chosen}p (capped at {max_height}p).")
-        return max_height
-
-    def _worker(self, url, start, end, max_height, insert_at, insert=True) -> None:
-        try:
-            self._progress(P_INFO, "Reading video info…")
-            meta = self._probe_metadata(url)
-            if self._cancelled():
-                self._stopped()
-                return
-
-            max_height = self._resolve_quality(max_height, meta)
-
-            checked = self._check_range(start, end, meta)
-            if checked is None:
-                self._progress(0.0, "Nothing to download — see log")
-                self.reveal_log()
-                return
-            start, end = checked
-
-            raw = self._download(url, start, end, max_height, meta)
-            if self._cancelled():
-                self._stopped()
-                return
-            if not raw:
-                self._progress(0.0, "Failed — see log")
-                self.reveal_log()
-                return
-
-            # The preparation pass: the fast, seek-friendly transcode described
-            # in media.py. A reused whole video has already been through it (it
-            # is the finished "<stem>.mp4").
-            section = None
-            if start is not None and end is not None:
-                section = media.Section(to_seconds(start), to_seconds(end))
-            path = self._prepare(raw, section)
-            if self._cancelled():
-                self._stopped()
-                return
-            if path is None:
-                self._progress(0.0, "Failed — see log")
-                self.reveal_log()
-                return
-
-            if insert:
-                # Past this point the file exists; the insert itself is quick and
-                # atomic enough that we let it finish rather than half-cancel it.
-                self._progress(P_INSERT, "Pasting into timeline…")
-                self.log("Sending to Resolve…")
-                res = resolve_bridge.import_and_insert(path, insert_at=insert_at)
-                self.log(f"Inserted '{res['clipName']}' at frame "
-                         f"{res['insertedFrame']}. Done.")
-            else:
-                res = {"clipName": os.path.basename(path)}
-                self.log(f"Downloaded '{res['clipName']}' — not inserted. Done.")
-                self.log(f"  Saved to: {path}")
-
-            # Recap what we got — the filename is only an id, so the
-            # human-readable title and channel are worth restating here.
-            info = self._probe_media(path)
-            self.log(f"  Video:   {meta.get('title') or 'unknown'}")
-            self.log(f"  Channel: {meta.get('channel') or 'unknown'}")
-            self.log(f"  Quality: {info.describe() if info else 'unknown'}")
-
-            self.log("Make sure to credit the sources!", tag="highlight")
-            self._progress(1.0, f"Done — {res['clipName']}")
-            if insert:
-                self._check_connection(quiet=True)
-        except resolve_bridge.ResolveError as e:
-            self.log(f"RESOLVE: {e}")
-            self._progress(0.0, "Resolve error — see log")
-            self.reveal_log()
-            self._check_connection(quiet=True)
-        except Exception as e:  # noqa: BLE001
-            if self._cancelled():
-                self._stopped()          # a kill surfaces as an exception too
-            else:
-                self.log(f"ERROR: {e}")
-                self._progress(0.0, "Failed — see log")
-                self.reveal_log()
-        finally:
-            self.active_proc = None
-            self.root.after(0, lambda: self._set_busy(False))
-
-    def _stopped(self) -> None:
-        self.log("Stopped.")
-        self._progress(0.0, "Stopped")
-
-    def _cleanup_partial(self, folder: str, stem: str) -> None:
-        """Remove the fragments of a cancelled or failed download.
-
-        Retried, because the first attempt usually loses a race: yt-dlp has
-        exited but the ffmpeg it spawned still holds the output open for a
-        moment, and Windows refuses to unlink an open file. A single try left a
-        truncated .mp4 on disk — which for a whole video is worse than clutter,
-        since the reuse check would then hand that half-file to Resolve forever.
-        _looks_complete is the backstop for when this still fails.
-        """
-        removed = 0
-        stuck: list[str] = []
-        for attempt in range(4):
-            stuck = []
-            try:
-                names = [n for n in os.listdir(folder) if n.startswith(stem + ".")]
-            except OSError:
-                return
-            if not names:
-                break
-            for name in names:
-                try:
-                    os.remove(os.path.join(folder, name))
-                    removed += 1
-                except OSError:
-                    stuck.append(name)
-            if not stuck:
-                break
-            if attempt < 3:
-                time.sleep(0.5)     # let the dying ffmpeg release its handle
-
-        if removed:
-            self.log(f"Cleaned up {removed} partial file(s).")
-        for name in stuck:
-            self.log(f"! couldn't delete {name} — something still has it open.")
-            self.log("  Delete it by hand if the next attempt reuses it.")
-
-    def _download(self, url, start, end, max_height, meta: dict) -> str | None:
-        # Checked explicitly, because the bare OSError from makedirs surfaces as
-        # "[WinError 3] The system cannot find the path specified: 'Q:\\'" with
-        # nothing to say it is the clips folder. The realistic cause is a clip
-        # folder on a drive that isn't mounted right now.
-        try:
-            os.makedirs(self.download_dir, exist_ok=True)
-        except OSError as e:
-            self.log(f"ERROR: can't use the clips folder — {e}")
-            self.log(f"       {self.download_dir}")
-            self.log("       If that's on a removable drive, reconnect it; "
-                     "otherwise pick another")
-            self.log("       folder in Settings.")
-            return None
-        video_id = meta.get("id") or "unknown-id"
-
-        # "<ID> - <title> - <channel>", sanitised for any OS.
-        job_dir = naming.ensure_clip_folder(
-            self.download_dir, video_id, meta.get("title", ""), meta.get("channel", ""))
-        whole = start is None or end is None
-        channel = meta.get("channel", "")
-
-        if whole:
-            # One fixed name per video, so a repeat request can reuse it.
-            stem = naming.full_stem(video_id, channel)
-            existing = self._existing_download(job_dir, stem)
-            if existing and not self._looks_complete(existing, meta):
-                # Left by an interrupted attempt. Removed rather than resumed:
-                # yt-dlp has no idea it's there, and leaving it would mean
-                # reusing it again on the next run.
-                self.log("  Downloading it again.")
-                try:
-                    os.remove(existing)
-                except OSError as e:
-                    self.log(f"! couldn't remove it ({e}); delete it by hand "
-                             "if this keeps happening.")
-                existing = None
-            if existing:
-                self.log(f"Already downloaded — reusing {os.path.basename(existing)}")
-                info = self._probe_media(existing)
-                if info:
-                    self.log(f"  {info.describe()}")
-                self.log("  Delete that file to download it again.")
-                self._progress(P_DOWNLOAD, "Using existing download…")
-                return existing
-        else:
-            # "<id>-<ChannelName>-cNNN", numbered from what's already on disk so
-            # nothing is ever overwritten.
-            stem = naming.next_clip_stem(job_dir, video_id, channel)
-
-        self.log(f"Folder: {os.path.basename(job_dir)}")
-        self.log(f"File:   {stem}.mp4")
-
-        cmd = [
-            *(self.ytdlp_cmd or []),
-            *self.js_args,
-            url,
-            "-f", format_selector(max_height),
-            "-S", FORMAT_SORT,
-            # MP4 for the raw download: yt-dlp then hides the keyframe lead of a
-            # section behind an edit list, so the file already plays from the
-            # in point and the conversion's trim has nothing left to do.
-            "--merge-output-format", "mp4",
-            "--no-playlist",
-            "-o", os.path.join(job_dir, stem + SOURCE_TAG + ".%(ext)s"),
-            "--newline",
-        ]
-        if not whole:
-            # Section mode: fetch only the requested range, cut at the keyframe
-            # before the in point and exactly at the end point, with no
-            # re-encoding here — the preparation pass makes the in point exact
-            # (media.py explains how). Never --force-keyframes-at-cuts: that
-            # re-encodes every clip with the container's default encoder.
-            cmd += ["--download-sections", f"*{start}-{end}"]
-        if self.ffmpeg_path:
-            cmd += ["--ffmpeg-location", os.path.dirname(self.ffmpeg_path)]
-
-        if whole:
-            self.log(f"Fetching the entire video at {self.quality_var.get()}…")
-        else:
-            self.log(f"Fetching *{start}-{end} at {self.quality_var.get()}…")
-        # yt-dlp spends a moment extracting and selecting formats before any frames
-        # arrive, so say what we're actually doing instead of leaving the label
-        # on "Reading video info...".
-        self._progress(step="Preparing download…")
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1, **_spawn_kwargs())
-        self.active_proc = proc
-        assert proc.stdout is not None
-        saw_403 = False
-        saw_no_js = False
-        saw_age_gate = False
-        got_bytes = False        # did any data actually arrive before it died?
-        phase = "prepare"
-        for line in proc.stdout:
-            if self._cancelled():
-                break
-            line = line.rstrip()
-            if not line:
-                continue
-            self.log(line)
-            low = line.lower()
-            if "403" in line and "forbidden" in low:
-                saw_403 = True
-            if "javascript runtime" in low:
-                saw_no_js = True
-            if "age" in low and ("confirm" in low or "sign in" in low
-                                 or "inappropriate" in low):
-                saw_age_gate = True
-
-            # yt-dlp reports a percentage per stream; map it into the download
-            # band so the bar tracks real progress instead of guessing.
-            m = _PCT_RE.search(line)
-            if m:
-                phase = "download"
-                if float(m.group(1)) > 0:
-                    got_bytes = True
-                pct = float(m.group(1)) / 100.0
-                self._progress(P_INFO + (P_DOWNLOAD - P_INFO) * pct,
-                               f"Downloading… {m.group(1)}%")
-            elif low.startswith("[download]") and phase != "download":
-                # First [download] line (usually "Destination: ...") — frames are
-                # coming now, so stop claiming we're still reading info.
-                phase = "download"
-                self._progress(step="Downloading…")
-            elif any(mark in low for mark in _POST_MARKERS) and phase != "post":
-                phase = "post"
-                self._progress(P_DOWNLOAD, "Merging & trimming…")
-        proc.wait()
-        self.active_proc = None
-
-        if self._cancelled():
-            # Drop the half-written pieces so this clip number stays free.
-            self._cleanup_partial(job_dir, stem)
-            return None
-
-        if proc.returncode != 0:
-            # Same cleanup as a cancellation. Without it a failed attempt leaves
-            # "<stem>.mp4.part" behind, and next_clip_stem counts that as taken —
-            # so every failure permanently burned a clip number and left junk in
-            # the folder. On a flaky connection that adds up fast.
-            self._cleanup_partial(job_dir, stem)
-            self.log(f"yt-dlp exited with code {proc.returncode}.")
-            if saw_no_js:
-                # The most likely cause of a YouTube failure now, and the one
-                # with a concrete fix, so it goes first. Deliberately not phrased
-                # as "not installed": yt-dlp prints the same complaint for a
-                # runtime that is present but older than it accepts.
-                self.log("HINT: yt-dlp found no usable JavaScript runtime, so "
-                         "YouTube withheld formats.")
-                self.log("      Check the JS line in Settings — see "
-                         "https://github.com/yt-dlp/yt-dlp/wiki/EJS")
-            if saw_403:
-                self._explain_403(got_bytes, saw_age_gate)
-            return None
-
-        # The merged raw file if it's there, otherwise another container —
-        # never a scratch file and never a per-stream fragment, which would be
-        # video-only or audio-only.
-        produced = self._existing_download(job_dir, stem + SOURCE_TAG, raw=True)
-        if not produced:
-            self._cleanup_partial(job_dir, stem)
-            self.log("yt-dlp finished but produced no usable file.")
-            self.log("  (only per-stream fragments were found — the merge step "
-                     "may have failed)")
-            return None
-        return produced
 
 
 def main() -> None:

@@ -164,20 +164,39 @@ def get_timeline_info() -> dict:
     if not tl:
         raise ResolveError("No timeline is open. Create or open one first.")
     fps = float(tl.GetSetting("timelineFrameRate") or 24)
+    # Resolve *plays* at the project's playback rate, which can lag behind
+    # the timeline's (a 24 default under a 60 fps timeline shows every 2.5th
+    # frame and reads as "choppy"). Reported so the app can say so.
+    try:
+        playback = float(tl.GetSetting("timelinePlaybackFrameRate")
+                         or project.GetSetting("timelinePlaybackFrameRate") or 0)
+    except (TypeError, ValueError):
+        playback = 0.0
     tc = tl.GetCurrentTimecode()
     return {
         "project": project.GetName(),
         "timeline": tl.GetName(),
         "fps": fps,
+        "playbackFps": playback or None,
         "currentTimecode": tc,
         "currentFrame": _timecode_to_frames(tc, fps),
         "startFrame": tl.GetStartFrame(),
     }
 
 
+# Resolve's per-clip retime process, as TimelineItem.SetProperty("RetimeProcess")
+# takes it. What a clip does on a timeline of another frame rate: "nearest"
+# repeats/drops frames (60 on 24p judders — every clip frame lasts 2 or 3
+# timeline frames), "blend" mixes neighbours (smooth, slightly soft), "optical"
+# synthesises in-between frames (best, GPU-heavy). "project" leaves the
+# project's default in charge. Measured against Resolve 21.
+RETIME_PROCESSES = {"project": 0, "nearest": 1, "blend": 2, "optical": 3}
+
+
 def import_and_insert(path: str, insert_at: str = "playhead",
                       track_index: int | None = None,
-                      start_frame: int = 0, end_frame: int | None = None) -> dict:
+                      start_frame: int = 0, end_frame: int | None = None,
+                      retime: str = "blend") -> dict:
     """Import `path` into the media pool and place it on the current timeline.
 
     insert_at: "playhead" -> at the current timecode
@@ -188,6 +207,11 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     timeline, in source frames (end exclusive, as Resolve counts it). Used for
     a remuxed section, which keeps the keyframe before the in point so that
     nothing has to be re-encoded; the extra frames stay available as a handle.
+
+    retime (see RETIME_PROCESSES) is applied to the placed item when the
+    clip's frame rate differs from the timeline's, so a 60 fps clip on a 24p
+    timeline plays smoothly instead of juddering; the result reports whether
+    it was.
     """
     if not os.path.isfile(path):
         raise ResolveError(f"File not found: {path}")
@@ -233,7 +257,33 @@ def import_and_insert(path: str, insert_at: str = "playhead",
             "or add an empty video track."
         )
 
-    return {
+    out = {
         "clipName": item.GetName(),
         "insertedFrame": clip_info.get("recordFrame"),
+        "retimed": None,
     }
+
+    # Frame-rate mismatch: pick the retime process on the item Resolve just
+    # made. AppendToTimeline returns the placed items on recent Resolve
+    # versions; older ones return True, so fall back to finding it by clip.
+    try:
+        tl_fps = float(tl.GetSetting("timelineFrameRate") or 0)
+        clip_fps = float(item.GetClipProperty("FPS") or 0)
+        mode = RETIME_PROCESSES.get(retime)
+        if mode and tl_fps and clip_fps and abs(tl_fps - clip_fps) > 0.01:
+            placed = [x for x in (result if isinstance(result, list) else [])
+                      if hasattr(x, "SetProperty")]
+            if not placed:
+                for track in range(1, tl.GetTrackCount("video") + 1):
+                    for x in tl.GetItemListInTrack("video", track) or []:
+                        mpi = x.GetMediaPoolItem()
+                        if mpi and mpi.GetMediaId() == item.GetMediaId() and \
+                                x.GetStart() == clip_info.get("recordFrame", x.GetStart()):
+                            placed.append(x)
+            for x in placed:
+                if x.SetProperty("RetimeProcess", mode):
+                    out["retimed"] = {"mode": retime, "clipFps": clip_fps, "timelineFps": tl_fps}
+    except Exception:  # noqa: BLE001 — a missing retime is a note, not a failed insert
+        pass
+
+    return out

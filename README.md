@@ -4,13 +4,14 @@
 
 # YEETingus
 
-**An open-source media ingestion tool for video editors: grab the part of a video you have the right to use and put it straight into your DaVinci Resolve timeline.**
+**Media ingestion for video editors: grab the part of a video you have the right to use and put it straight onto your timeline — DaVinci Resolve or Premiere Pro.**
 
-Paste a link, set the in/out point, and press one button. No browser, no full-video download, no manual importing, no conversion step — the clip arrives ready to scrub.
+Paste a link, set the in/out point, press one button. No browser, no full-video download, no manual importing, no conversion step — the clip arrives ready to scrub.
 
-![version](https://img.shields.io/badge/version-1.4.0-edff00?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-2.0.0-87a15e?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
+![premiere](https://img.shields.io/badge/Premiere%20Pro-26.3%2B-9999ff?style=flat-square&labelColor=1a1a1a)
 ![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
 
 </div>
@@ -19,52 +20,89 @@ Paste a link, set the in/out point, and press one button. No browser, no full-vi
 
 ## What it does
 
-YEETingus is an open-source media ingestion tool for video editors. It retrieves media you have the right to use and prepares it for editing workflows such as DaVinci Resolve. This includes your own uploads, openly licensed material, and promotional media made available for creator, press, or editorial use.
+YEETingus retrieves media you have the right to use — your own uploads, openly licensed material, promotional media made available for creator, press or editorial use — and prepares it for editing.
 
-Instead of downloading a whole video, trimming it, converting it, importing it and dragging it onto the timeline, YEETingus downloads only the part you need, converts it into a file Resolve scrubs smoothly, and places it at your playhead.
+Instead of downloading a whole video, trimming it, converting it, importing it and dragging it onto the timeline, YEETingus downloads only the part you need, converts it into a file your editor scrubs smoothly, and places it at your playhead.
 
 ![YEETingus](assets/screenshot.jpg)
+
+## 2.0
+
+2.0 is a rewrite of everything you can see. The download-and-prepare pipeline underneath is the one from 1.4, unchanged and still measured (`BENCHMARK.md`).
+
+- **A new app.** Native window, ~10 MB, dark and light theme, a layout that follows the window instead of fighting it. Controls on the left, content on the right, one button that does the thing.
+- **Clip history.** Every clip you've ever made, newest first, with thumbnail, title, channel, length, size and date. From each one: insert it into the timeline again, play it, open the video's page, open its folder, delete it. Click a title or a channel to copy it.
+- **Link preview** the moment you paste, with a green **Ready** when it checks out — and a red warning when the video is age-restricted, *before* you waste a download on it.
+- **A length slider** next to the presets, for anything from one second to five minutes.
+- **Premiere Pro.** See below. Bring a helmet.
+- **First-run setup** that asks which editor you use and gets you there.
+
+`FEATURES.md` has the complete list.
 
 ## Features
 
 ### Clipping
-- Download only the selected part of a video.
-- Frame-accurate in/out points.
-- Enter timestamps as `90`, `1:30`, or `00:01:30`.
-- Quick lengths: `15s`, `30s`, `90s`, `2m`, `5m`, `10m`, or **Entire**.
-- `?t=` timestamps in shared links are detected automatically.
-- The end point can automatically follow your default clip length.
-- Leave both points at `00:00` to download the whole video.
+- Download only the selected part of a video; frame-accurate in/out points.
+- Timestamps as `90`, `1:30` or `00:01:30`; presets `15s`, `30s`, `60s`, **Whole**, or the slider.
+- `?t=` timestamps in shared links set the in point automatically.
+- The end point follows your default clip length when you type an in point.
 
-### DaVinci Resolve
-- Insert at the **current playhead** or at the **start of the timeline**.
-- Live connection status shows whether Resolve, a project, and a timeline are available.
-- The playhead position is read when the clip is inserted, so no refresh is needed.
-- Launch from `Workspace → Scripts → Utility`.
-- **Download only** mode works without Resolve being open.
+### The editor
+- **Insert at the playhead or at the start of the timeline.**
+- Live connection status: your project and timeline (Resolve) or sequence (Premiere), and what's missing if something is.
+- **Download only** works with no editor open at all.
 
 ### Quality and playback
-- Choose up to **Best, 2160p, 1440p, 1080p, 720p, or 480p**.
-- The app checks which quality the video actually provides.
-- Full resolution at every quality — nothing is capped to make Resolve happy.
-- Every download is converted into an **editing intermediate with a keyframe every half second**, so Resolve scrubs, steps and jumps through it instantly — using the GPU's AV1 encoder when there is one (seconds, even for 4K60), otherwise the CPU.
-- The log reports the actual resolution, codec, and frame rate of the resulting file, and what was done to it.
+- Choose up to **Best, 2160p, 1440p, 1080p, 720p or 480p**; the app checks what the video actually offers and says so.
+- Full resolution at every quality — nothing is capped to make an editor happy.
+- Every download becomes an **editing intermediate with a keyframe every half second**, so scrubbing, stepping and jumping are instant: your GPU's AV1 encoder for Resolve, HEVC for Premiere (see below), the CPU if you have neither.
 
 ### File handling
-- Clips are stored in your Videos folder by default.
-- Files are placed in folders named `<video ID> - <title> - <channel>`.
-- Existing clips are never overwritten.
-- Whole videos are saved once and reused on later requests.
-- Filenames are cleaned up for Windows. Accented Latin text is folded to plain ASCII (`Zażółć` → `Zazolc`); other scripts such as 日本語 are left readable.
+- Clips live in your Videos folder, in `<video ID> - <title> - <channel>` folders, with a small `.json` beside each one recording where it came from.
+- Existing clips are never overwritten; whole videos are saved once and reused.
+- Filenames are cleaned up for every OS. Accented Latin folds to ASCII (`Zażółć` → `Zazolc`); other scripts stay readable.
 
-### Quality of life
-- Stop a download at any time.
-- Clear progress states: downloading, merging, preparing, inserting, etc.
-- Optional collapsible log.
-- UI scales correctly on different display sizes.
-- Dark Windows title bar.
-- Built-in **Update yt-dlp** button.
-- No Python installation is needed to run the built app.
+---
+
+## DaVinci Resolve
+
+Works with **DaVinci Resolve Studio**. External scripting — a program outside Resolve talking to it — is a Studio feature; on the free version you can still use **Download only** and drag the file in yourself.
+
+Turn it on once: `Preferences → System → General → External scripting using → Local`. YEETingus tells you if it isn't.
+
+---
+
+## Premiere Pro
+
+It works. Video and audio land on V1/A1 at your playhead, from the same button. Getting there required going through Adobe's extensibility platform, so, a word about that.
+
+### The setup
+
+1. Settings → Editor → **Premiere Pro** → **Install the Premiere panel**. YEETingus packages its panel and hands it to Adobe's own plugin installer. No developer mode, no "UXP Developer Tool", no signing ceremony. Ten seconds.
+2. In Premiere: **Window → UXP Plugins → YEETingus**. Dock it somewhere small and **save your workspace**. Premiere then brings it back on every launch. You never touch it again.
+3. Have YEETingus running. The panel finds it by itself.
+
+That's it — one-time. The panel has no controls; it's a green dot.
+
+### A word about UXP
+
+Premiere Pro has no scripting interface you can reach from outside it. None. Resolve has had one for years — a program on the same machine can ask it what's open and put a clip on the timeline. Premiere offers "UXP": a JavaScript sandbox that runs *inside* Premiere, in a panel, and only while that panel is open.
+
+So every tool like this one — AutoSubs, Taperat, YEETingus — has to ship a panel whose whole job is to sit there and be a phone line. Fine. Except the sandbox also can't:
+
+- **start a program.** `shell.openExternal("yeetingus://")` → *"URI scheme yeetingus is not accepted."* `shell.openPath("YEETingus.exe")` → *"Extension .exe is not accepted."* Tested, both. The panel cannot launch the app it exists to talk to. You start YEETingus yourself, like an animal.
+- **be opened from outside.** No API, no command line, nothing. Hence the workspace dance.
+- **use a normal DOM or CSS.** A subset, with its own widgets, so nothing you already have carries over.
+
+And then there's the codec.
+
+### A word about AV1
+
+It's 2026. AV1 is the codec YouTube serves you for anything past 1080p, the codec every GPU from the last four years encodes and decodes in hardware, the codec Resolve has played since 18.1. YEETingus makes its editing intermediates in AV1 for exactly those reasons: fast to make, instant to scrub, half the size.
+
+**Premiere Pro 26.3 does not decode AV1.** Import an AV1 MP4 and you get a waveform. Audio only. No error, no warning, just silently less video than you gave it. This is the flagship NLE of the company that sells you Media Encoder.
+
+So when Premiere is your editor, YEETingus encodes **HEVC** instead — same half-second keyframes, same hardware path, Premiere plays it fine — and if you insert an older AV1 clip from the history, it quietly makes an HEVC copy beside it first. You'll never notice. Adobe should.
 
 ---
 
@@ -72,17 +110,11 @@ Instead of downloading a whole video, trimming it, converting it, importing it a
 
 | Requirement | Details |
 |---|---|
-| OS | Windows or macOS on Apple Silicon |
-| DaVinci Resolve | Studio is the supported configuration |
-| Resolve scripting | `Preferences → System → General → External scripting using → Local` |
-| Python | Only needed to build/run from source: 3.6–3.13 |
-| yt-dlp | Downloaded automatically on first run |
-| ffmpeg | Downloaded automatically on Windows; install manually on macOS |
-| JavaScript runtime | Deno is downloaded automatically |
-
-> **Important:** External scripting must be enabled in Resolve or YEETingus cannot connect to it.
-
-The built application includes its own Python runtime, so normal users do **not** need Python.
+| OS | Windows 10/11, or macOS on Apple Silicon |
+| DaVinci Resolve | **Studio**, with `External scripting using → Local` |
+| Premiere Pro | 26.3 or newer, with Creative Cloud desktop installed (its plugin installer is used) |
+| yt-dlp, ffmpeg, Deno | Downloaded automatically on first run (macOS: `brew install ffmpeg`) |
+| Python / Node / Rust | Only to build from source |
 
 ---
 
@@ -90,352 +122,88 @@ The built application includes its own Python runtime, so normal users do **not*
 
 ### Download a release
 
-Get it from the [latest release](https://github.com/hajdawery/yeetingus/releases/latest). No Python needed.
-
-- **Windows** — download `YEETingus-windows-x86_64.exe` and run it.
-- **macOS** — download `YEETingus-Mac-ARM.zip`, unzip it, and run `python3 install.py` from the unzipped folder. Also run `brew install ffmpeg`.
+Get it from the [latest release](https://github.com/hajdawery/yeetingus/releases/latest) and run the installer. On first launch YEETingus asks which editor you use and walks you through the one-time setup for it.
 
 ### Or build it yourself
 
-Recommended if you would rather not trust a pre-built binary. It also avoids the antivirus and Gatekeeper warnings below.
-
-**Windows**
-
 ```bash
 git clone https://github.com/hajdawery/yeetingus.git
 cd yeetingus
-
-py -3.13 build.py
-py -3.13 install.py
 ```
 
-**macOS**
+The service and the pipeline are Python (3.13); the window is Tauri (Rust + Node):
 
 ```bash
-git clone https://github.com/hajdawery/yeetingus.git
-cd yeetingus
-
-brew install ffmpeg
-python3.13 build.py
-python3.13 install.py
+py -3.13 backend/service.py --port 47591 --token dev     # the engine, over localhost
+cd app && npm install && npm run tauri dev                # the window
 ```
 
-Restart DaVinci Resolve after installing, either way. It caches the Scripts menu, so until you do you are still running the previous version.
+`build.py` freezes the service; `npm run tauri build` packages the app. Restart Resolve after installing either way — it caches its Scripts menu.
 
-The build creates:
-
-- Windows: `dist\YEETingus.exe`
-- macOS: `dist/YEETingus.app`
-
-You can also run directly from source. On Windows:
-
-```bash
-py -3.13 backend\yeet_app.py
-```
-
-On macOS:
-
-```bash
-python3.13 backend/yeet_app.py
-```
-
-Use `install.py --dev` if you want the Resolve menu entry to launch your source copy.
-
----
-
-## macOS: ffmpeg
-
-Windows gets ffmpeg automatically from the builds maintained for yt-dlp.
-
-On Apple Silicon there is no equivalent trusted distribution that YEETingus can bundle, so macOS requires:
-
-```bash
-brew install ffmpeg
-```
-
-If you already have a trusted ffmpeg installation, you can point YEETingus to it with `YEET_FFMPEG`.
-
-`YEET_FFPROBE`, `YEET_YTDLP`, and `YEET_DENO` can also be used to provide custom tool paths.
-
----
-
-## JavaScript runtime
-
-YouTube now uses JavaScript challenges that yt-dlp sometimes needs to solve.
-
-YEETingus downloads **Deno** automatically on first run. It is a one-time download of roughly 40 MB.
-
-If Deno is already installed — on your `PATH`, or in `~/.deno/bin` where its own installer puts it — YEETingus uses that and downloads nothing.
-
-If the download fails, for example on a first run with no network, **Settings → Install JavaScript runtime** retries it. That button only appears while Deno is missing.
-
----
-
-## Antivirus warnings
-
-Windows Defender and other scanners may flag the pre-built Windows executable as a false positive.
-
-This happens because YEETingus:
-
-- is a new, unsigned PyInstaller application;
-- downloads other executables;
-- starts and stops child processes;
-- writes to DaVinci Resolve's Scripts folder.
-
-The source code is public and not obfuscated.
-
-If you do not trust the pre-built binary, build it yourself:
-
-```bash
-py -3.13 build.py
-```
-
-Release builds also provide SHA-256 checksums. Code signing is planned.
-
----
-
-## macOS Gatekeeper
-
-Pre-built unsigned macOS applications may be blocked by Gatekeeper.
-
-The recommended solution is to build the application yourself. If you are using a downloaded build, you can also try:
-
-- Right-click → **Open**
-- **System Settings → Privacy & Security → Open Anyway**
-
-Apple Developer signing and notarisation are planned.
-
----
-
-## How to use
-
-1. Open a project and timeline in DaVinci Resolve.
-2. Open `Workspace → Scripts → Utility → YEETingus`.
-3. Paste a YouTube or Twitch link.
-4. Set the in/out points, or choose a clip length.
-5. Choose the maximum quality.
-6. Choose **Playhead** or **Start of timeline**.
-7. Press **YEET**.
-
-The clip is downloaded, processed, imported and placed on the timeline.
-
-Use **Download only** if you just want the file.
-
-The main button becomes **STOP** while a job is running.
-
----
-
-## Settings
-
-Settings are saved between installations.
-
-### Available options
-
-- **Clip storage folder** — Videos by default (`Movies` on macOS).
-- **Default clip length** — `15s`, `30s`, `60s`, or `90s`.
-- **Tool versions and paths** — yt-dlp, ffmpeg, and Deno, plus which encoder the conversion will use on this machine.
-- **Resolve diagnostics** — scripting library and Python compatibility.
-- **Update yt-dlp**.
-- **Install JavaScript runtime** when Deno is missing.
+The 1.x Tkinter window (`backend/yeet_app.py`) still runs on the same engine, if you like it plain.
 
 ---
 
 ## Where clips are saved
 
-By default:
+Your Videos folder, in an app-named subfolder, one folder per video. Change it in Settings; existing clips are left where they are (your timelines reference them by path).
 
-```text
-Windows:
-%USERPROFILE%\Videos\YEETingus\
-
-macOS:
-~/Movies/YEETingus/
-```
-
-Example:
-
-```text
-dQw4w9WgXcQ - Never Gonna Give You Up - Rick Astley\
-├── dQw4w9WgXcQ-RickAstley-c001.mp4
-└── dQw4w9WgXcQ-RickAstley-c002.mp4
-```
-
-Nothing is overwritten.
-
-Whole videos use:
-
-```text
-<videoid>-<ChannelName>-full.mp4
-```
-
-If that file already exists and is complete, YEETingus reuses it instead of downloading it again.
+Windows: `%USERPROFILE%\Videos\YEETingus\` · macOS: `~/Movies/YEETingus/`
 
 ---
 
-## Why the clip is converted, and what that means for you
+## Why the clip is converted
 
-Videos on the web are made for *watching*, not editing. To keep them small, the site stores a full picture only every few seconds and just the changes in between. That is fine for playback, but when you scrub a timeline, Resolve has to rebuild every frame from the last full picture — up to a few hundred frames at 4K — and that is what makes a raw download feel sticky and slow on the timeline.
-
-So YEETingus converts every clip into a file made for editing: a full picture every half second. Resolve then scrubs, steps and jumps through it instantly. There is nothing to configure; the app picks the fastest way your computer can do it:
-
-| Your computer | How it converts | How fast (4K, 60 fps) |
-|---|---|---|
-| A recent graphics card that can encode AV1 — NVIDIA RTX 40 or 50 series, Intel Arc, AMD RX 7000 | on the graphics card | a one-minute clip in about 10 seconds |
-| Anything else (older graphics cards, all Macs) | on the processor, using a simple, universal format | a one-minute clip in 10–25 seconds on a modern processor |
-
-What that costs and where the limits are, in plain terms:
-
-- **Files are bigger than the download — roughly 1.5 to 3 times.** An editing-friendly file has far more full pictures in it than a streaming file. That is the whole point, and it is a normal size for editing material (professional editing formats are 50–200 times bigger). A one-minute 4K clip is typically 130–200 MB.
-- **Quality does not visibly change.** The conversion is tuned so that text, fine detail and gradients look the same as the download. We measured it; the numbers are in [BENCHMARK.md](BENCHMARK.md).
-- **Full resolution is always kept.** Nothing is capped at 1080p any more.
-- **HDR and 10-bit video are kept — but only on the graphics-card path.** If your clip is HDR and your computer converts on the processor instead, the result is ordinary 8-bit SDR. The log tells you when this happens.
-- **Resolve 18.1 or newer is needed for clips made on the graphics-card path.** Older Resolve versions cannot play AV1 at all. If you are on an older Resolve, the processor path works everywhere.
-- **On Macs everything goes through the processor path**, because Apple's chips cannot encode AV1. It is still fast, but 4K clips are a little heavier for Resolve to play back than on a PC with a recent graphics card.
-- **Very long 4K downloads on the processor path are heavy for Resolve to play** (scrubbing is still instant). For whole 4K videos on such a machine, use Resolve's *Generate Optimized Media* or download at 1440p.
-- **Audio is copied untouched** (AAC). It is only converted when the site offered nothing but Opus, which some Resolve versions cannot play.
-- **Clips are frame-exact** at the in point and end point you typed, to within one frame.
-- **Clips downloaded by an older version of YEETingus** are reused as they are. Delete the file (the log shows the folder) to download and convert it the new way.
-
-Why not just hand Resolve the download as it is? We tried — it is instant and loses nothing, but on a 4K timeline it scrubbed badly for the reason above, and the converted clips scrubbed perfectly. The full comparison, including the other formats that were tested and rejected, is in [BENCHMARK.md](BENCHMARK.md).
-
----
-
-## How it works
-
-YEETingus is a standalone application. It does not run a server or listen on a port.
-
-```text
-DaVinci Resolve
-      │
-      ▼
-YEETingus
-      │
-      ├── yt-dlp ── downloads video
-      ├── ffmpeg ── converts it into a seek-friendly intermediate (backend/media.py decides how)
-      └── Deno ──── solves YouTube JS challenges
-      │
-      ▼
-Resolve scripting API
-      │
-      ├── imports media
-      └── inserts it into the timeline
-```
-
-The Resolve-specific code is kept in `resolve_bridge.py`, making it possible to add support for another editor later without rebuilding the whole application.
+Handing the editor the download as-is is instant and lossless — and it scrubs like mud. YouTube puts a keyframe every five seconds, so every seek decodes up to 300 frames at 4K60. Seeking is the point of this tool, so every download is re-encoded with a keyframe every half second and no B-frames. That costs a few seconds and 1.5–3× the file size, and it's why the timeline feels instant. `BENCHMARK.md` has the numbers.
 
 ---
 
 ## Troubleshooting
 
-### YEETingus does nothing from the Resolve menu
+**Resolve is not connected.** Resolve is running, a project and timeline are open, `External scripting using` is Local, and it's Studio. Click the status pill to re-check.
 
-1. Restart Resolve.
-2. Check `launcher.log`:
-   - Windows: `%LOCALAPPDATA%\YEETingus\`
-   - macOS: `~/Library/Application Support/YEETingus/`
-3. Run the installer again and check its verification output.
+**Premiere panel not open.** Window → UXP Plugins → YEETingus, then save the workspace so it stays. The Settings card says whether the panel is installed and whether Premiere has it open.
 
-### Resolve is not connected
+**Premiere imported a clip as audio only.** It's an AV1 file from before Premiere was chosen as the editor, and Premiere remembers the audio-only import by path. Delete that item from the Project panel; inserting again from the history makes an HEVC copy and imports that.
 
-Make sure:
+**Age-restricted.** YEETingus uses no signed-in session, so it can't; the preview says so before you try.
 
-- Resolve is running.
-- A project and timeline are open.
-- `External scripting using` is set to **Local**.
-- The Resolve diagnostic in Settings shows a supported scripting setup.
+**HTTP 403 / "no JavaScript runtime".** Settings → Update yt-dlp; check the JS line. YouTube changes things and yt-dlp catches up within days.
 
-Click `↻` next to the connection status to check again.
-
-### A 4K video stutters or goes Media Offline
-
-Check the **Quality** line in the log. If it says `av1`, the file was made with your GPU's AV1 encoder, and the same GPU decodes it — so an older Resolve version is the likely cause: AV1 playback needs Resolve 18.1 or later.
-
-A whole video downloaded by an older version of YEETingus is reused as-is. Delete it (the log shows the folder) and download again to have it prepared the new way.
-
-### "No JavaScript runtime"
-
-Open Settings and check the `JS:` line.
-
-If Deno is missing, use **Install JavaScript runtime**.
-
-If yt-dlp is old, use **Update yt-dlp**.
-
-### HTTP 403
-
-Common causes:
-
-- **Age-restricted video:** YEETingus does not use a signed-in session, so it cannot download it.
-- **YouTube changed something:** update yt-dlp and try again.
-- **Missing Deno:** check the `JS:` line in Settings.
-
-### Requested 4K but got 1080p
-
-The video does not offer 4K. YEETingus falls back to the best available quality instead of failing.
-
-### 4K clip playback is slow
-
-Check the **Video** line in Settings → Tools: without a hardware AV1 encoder everything is converted on the CPU to MPEG-4, which Resolve decodes in software — fine for 1080p and 1440p, but 4K60 is heavy for any software decoder. Generate Optimized Media in Resolve for those clips, or download at 1440p.
+**Requested 4K, got 1080p.** The video doesn't offer 4K; the app took the best it has and said so in the log.
 
 ---
 
 ## Known limitations
 
-- **Every clip is converted, so it takes a few seconds** after the download (about 10 seconds per minute of 4K on a recent graphics card, up to about 25 on the processor) and the file is 1.5–3 times bigger than the download. See [above](#why-the-clip-is-converted-and-what-that-means-for-you) for why.
-- **Resolve 18.1 or newer** is needed to play clips made on a computer with an AV1-capable graphics card.
-- **HDR is kept only on the graphics-card path**; on the processor path HDR clips become SDR.
-- **Macs always use the processor path** (no AV1 encoding on Apple chips).
-- **29.97/59.94 drop-frame timelines:** playhead placement can be off by a frame or two.
-- **Linux:** not tested or supported.
-- **Intel Macs:** not tested or shipped; Apple Silicon is the supported macOS platform.
-- **macOS:** ffmpeg must be installed manually.
-- **macOS Light Mode:** the title bar may remain light.
-- **No automatic app updates yet.**
-- **Mostly tested with YouTube and Twitch.** yt-dlp supports many other sites, but they are not officially tested by this project.
-- **Age-restricted videos:** currently unsupported because no signed-in browser session is used.
+- Every clip is converted, so it takes a few seconds after the download and the file is bigger than the download. See above for why.
+- Resolve 18.1+ is needed to play AV1 clips; Premiere gets HEVC instead because it can't play AV1 at all.
+- HDR is kept only on the GPU path; on the CPU path HDR clips become SDR.
+- Macs use HEVC (VideoToolbox) for Premiere and the CPU path for Resolve — no AV1 encoder on Apple chips.
+- 29.97/59.94 drop-frame timelines: playhead placement can be off by a frame or two.
+- Linux and Intel Macs: not tested.
+- No automatic app updates yet.
+- Mostly tested with YouTube and Twitch.
 
 ---
 
 ## Legal
 
-YEETingus is for media you have the right to use: your own uploads, openly licensed material, and promotional media made available for creator, press, or editorial use. Downloading other videos may violate the terms of service of the site you download from, and copyright belongs to the content owner.
+YEETingus is for media you have the right to use: your own uploads, openly licensed material, and promotional media made available for creator, press or editorial use. Downloading other videos may violate the terms of service of the site you download from, and copyright belongs to the content owner.
 
-Fair use / fair dealing can apply to commentary, criticism, review, teaching, and similar uses, but the rules depend on your country and situation. YEETingus does not give you permission to use copyrighted material.
+Fair use / fair dealing can apply to commentary, criticism, review, teaching and similar uses, but the rules depend on your country and situation. YEETingus does not give you permission to use copyrighted material.
 
 **You are responsible for what you download and publish. Credit your sources.**
 
-YEETingus does not collect telemetry, analytics, or account information.
+YEETingus collects no telemetry, analytics or account information. It connects only to download yt-dlp, ffmpeg and Deno when required, and to the site of the link you provide. Everything between the window, the service and the Premiere panel stays on your machine.
 
-The app only makes network connections to:
-
-- download yt-dlp, ffmpeg, and Deno when required;
-- access the website corresponding to the link you provide.
-
-DaVinci Resolve, Blackmagic Design, YouTube, Twitch, macOS, Apple Silicon, and Windows are trademarks of their respective owners. YEETingus is an independent project and is not affiliated with or endorsed by them.
+DaVinci Resolve, Blackmagic Design, Adobe, Premiere Pro, YouTube, Twitch, macOS, Apple Silicon and Windows are trademarks of their respective owners. YEETingus is an independent project and is not affiliated with or endorsed by them. Opinions about their extensibility platforms are the author's own, and earned.
 
 ---
 
 ## License
 
-YEETingus is released under the **MIT License**.
-
-You may use and sell it commercially as long as the copyright notice and licence are included.
-
-The MIT licence for this project does not cover:
-
-- content downloaded with the application;
-- third-party components included in a built binary.
-
-See `THIRD-PARTY-NOTICES.md` before redistributing a built application.
-
----
-
-## How this was built
-
-**This project was vibecoded, with heavy use of Claude.**
-
-It was built to solve a real editing problem and tested against real DaVinci Resolve installations.
-
-The source code is public and readable. Bugs are still my responsibility — if something breaks, please open an issue.
+MIT. See `THIRD-PARTY-NOTICES.md` before redistributing a built application; the licence does not cover content downloaded with it or third-party components in a build.
 
 ---
 
@@ -443,8 +211,8 @@ The source code is public and readable. Bugs are still my responsibility — if 
 
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — video downloading
 - **[ffmpeg](https://ffmpeg.org/)** — trimming, merging and conversion
-- **[AutoSubs](https://github.com/tmoroney/auto-subs)** — reference for external Resolve tools
-- **Blackmagic Design** — for the Resolve scripting API
+- **[AutoSubs](https://github.com/tmoroney/auto-subs)** — the look, and proof that a panel-as-phone-line works
+- **Blackmagic Design** — for a scripting API that a program can actually call
 
 <div align="center">
 

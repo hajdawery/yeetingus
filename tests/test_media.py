@@ -290,10 +290,28 @@ class Capabilities(unittest.TestCase):
         self.assertIn("CPU", caps.describe())
 
     def test_macos_has_no_hw_av1_encoder(self):
+        # No AV1 encoder is even tried on macOS; VideoToolbox HEVC is, for Premiere.
         with mock.patch.object(media, "_try_encoder", return_value=True) as enc:
             caps = media.probe_capabilities(FF, platform="darwin")
-        enc.assert_not_called()
+        self.assertEqual([c.args[1] for c in enc.call_args_list], ["hevc_videotoolbox"])
         self.assertIsNone(caps.av1_encoder)
+        self.assertEqual(caps.hevc_encoder, "hevc_videotoolbox")
+
+    def test_premiere_gets_hevc_not_av1(self):
+        caps = media.Capabilities(av1_encoder="av1_nvenc", hevc_encoder="hevc_nvenc")
+        p = media.plan(src(vcodec="av1"), caps, editor="premiere")
+        self.assertEqual(p.encoder, "hevc_nvenc")
+        self.assertIn("hvc1", p.video_args)
+        self.assertEqual(media.plan(src(vcodec="av1"), caps).encoder, "av1_nvenc")
+        # No HEVC hardware: the CPU path, which Premiere also reads.
+        caps = media.Capabilities(av1_encoder="av1_nvenc", hevc_encoder=None)
+        self.assertEqual(media.plan(src(vcodec="av1"), caps, editor="premiere").encoder, "mpeg4")
+
+    def test_plays_in(self):
+        self.assertFalse(media.plays_in("premiere", "av1"))
+        self.assertTrue(media.plays_in("premiere", "hevc"))
+        self.assertTrue(media.plays_in("resolve", "av1"))
+        self.assertTrue(media.plays_in("resolve", "mpeg4"))
 
     def test_failed_encoder_init_is_a_clean_false(self):
         # subprocess raising (missing binary, timeout) must read as "no".

@@ -229,7 +229,104 @@ def codesign_adhoc(bundle: str) -> None:
         print("(codesign not found — skipping; is Xcode CLT installed?)")
 
 
+def rust_triple() -> str:
+    """The host's Rust target triple, which Tauri expects in a sidecar's name."""
+    try:
+        out = subprocess.run(["rustc", "-vV"], stdout=subprocess.PIPE, text=True,
+                             timeout=30).stdout
+        for line in out.splitlines():
+            if line.startswith("host:"):
+                return line.split(":", 1)[1].strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if WINDOWS:
+        return "x86_64-pc-windows-msvc"
+    import platform as _platform
+    return ("aarch64" if _platform.machine() == "arm64" else "x86_64") + "-apple-darwin"
+
+
+def build_service() -> int:
+    """Freeze backend/service.py as the Tauri app's sidecar.
+
+    The 2.0 app is a Tauri window plus this service. Tauri bundles an
+    "external binary" from src-tauri/binaries/<name>-<target triple>[.exe]
+    and installs it beside the app exe as <name>[.exe] — which is exactly
+    where lib.rs looks for it.
+
+    Console subsystem on purpose: the app reads the port from the service's
+    stdout, and a --windowed PyInstaller exe has no stdout. Tauri starts it
+    with CREATE_NO_WINDOW, so no console ever shows.
+    """
+    sys.path.insert(0, os.path.join(HERE, "backend"))
+    import resolve_bridge
+    if not resolve_bridge.python_is_supported():
+        print("ERROR: build the service with a Python the Resolve library loads into: "
+              f"{resolve_bridge.version_range_text()}")
+        return 1
+    try:
+        import PyInstaller  # noqa: F401
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-U", "pyinstaller"], check=True)
+
+    out_dir = os.path.join(HERE, "app", "src-tauri", "binaries")
+    os.makedirs(out_dir, exist_ok=True)
+    name = f"yeetingus-service-{rust_triple()}"
+    panel = os.path.join(HERE, "premiere", "panel")
+    work = os.path.join(HERE, "build", "service")
+    shutil.rmtree(work, ignore_errors=True)
+
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm", "--clean", "--onefile", "--console",
+        "--name", name,
+        "--distpath", out_dir,
+        "--workpath", work,
+        "--specpath", work,
+        "--paths", os.path.join(HERE, "backend"),
+        "--hidden-import", "engine",
+        "--hidden-import", "premiere_bridge",
+        "--hidden-import", "resolve_menu",
+        "--hidden-import", "config",
+        "--hidden-import", "deps",
+        "--hidden-import", "media",
+        "--hidden-import", "resolve_bridge",
+        "--hidden-import", "naming",
+        "--hidden-import", "version",
+        "--hidden-import", "platform_paths",
+        "--exclude-module", "tkinter",
+        "--exclude-module", "numpy",
+        "--exclude-module", "pytest",
+        "--exclude-module", "setuptools",
+        # The Premiere panel and the Resolve launcher template ship inside,
+        # so Settings can install either.
+        "--add-data", f"{panel}{os.pathsep}premiere/panel",
+        "--add-data", f"{os.path.join(HERE, 'resolve', NAME + '.lua.in')}{os.pathsep}resolve",
+        os.path.join(HERE, "backend", "service.py"),
+    ]
+    if WINDOWS:
+        cmd += ["--version-file", write_version_resource(
+            name, f"{NAME} service — the engine behind the {NAME} window")]
+        ico = os.path.join(HERE, "assets", f"{NAME.lower()}.ico")
+        if os.path.isfile(ico):
+            cmd += ["--icon", ico]
+    print("Running:", " ".join(cmd))
+    rc = subprocess.run(cmd, cwd=HERE).returncode
+    if rc != 0:
+        return rc
+    exe = os.path.join(out_dir, name + (".exe" if WINDOWS else ""))
+    if not os.path.isfile(exe):
+        print(f"ERROR: build reported success but {exe} is missing.")
+        return 1
+    print("")
+    print(f"Built {exe}  ({os.path.getsize(exe) / 1048576:.1f} MB)")
+    print("Next:  cd app && npm run tauri build    (bundles it into the installer)")
+    return 0
+
+
 def main() -> int:
+    if "--service" in sys.argv:
+        return build_service()
+
     # The supported range lives in resolve_bridge so there's one place to bump.
     sys.path.insert(0, os.path.join(HERE, "backend"))
     import resolve_bridge
@@ -276,6 +373,7 @@ def main() -> int:
         "--paths", os.path.join(HERE, "backend"),
         # imported lazily / by string, so state them explicitly
         "--hidden-import", "config",
+        "--hidden-import", "engine",
         "--hidden-import", "deps",
         "--hidden-import", "media",
         "--hidden-import", "theme",

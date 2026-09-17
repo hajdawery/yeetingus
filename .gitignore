@@ -29,3 +29,13 @@ HANDOFF.md
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Tauri front end (app/)
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/
+app/src-tauri/binaries/
+
+# Claude desktop dev-server config
+.claude/

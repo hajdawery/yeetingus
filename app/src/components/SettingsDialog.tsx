@@ -1,0 +1,228 @@
+import { useEffect, useState } from "react";
+import type { Api, Conform, Editor, EngineState, Retime } from "../api";
+import { X } from "../icons";
+import { Button, Card, Field, Segmented } from "./ui";
+import { ResolveMenuSetup } from "./ResolveMenuSetup";
+
+const LENGTH_CHOICES = [15, 30, 60, 90];
+
+const AUTHOR_URL = "https://github.com/hajdawery";
+
+export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }: {
+  api: Api;
+  state: EngineState;
+  toolBusy: Record<string, boolean>;
+  onClose: () => void;
+  onLog: (text: string) => void;
+  version: string;
+}) {
+  const [dir, setDir] = useState(state.settings.download_dir);
+  const [editor, setEditor] = useState<Editor>(state.settings.editor);
+  const [retime, setRetime] = useState<Retime>(state.settings.retime);
+  const [conform, setConform] = useState<Conform>(state.settings.conform);
+  const [length, setLength] = useState(
+    String(LENGTH_CHOICES.reduce((a, b) =>
+      Math.abs(b - state.settings.default_length) < Math.abs(a - state.settings.default_length) ? b : a)),
+  );
+  const [resolveEnv, setResolveEnv] = useState<Record<string, unknown> | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [canBrowse, setCanBrowse] = useState(false);
+
+  useEffect(() => {
+    api.resolveEnv().then((r) => setResolveEnv(r.env)).catch(() => setResolveEnv(null));
+    setCanBrowse(Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__));
+  }, [api]);
+
+  const browse = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const chosen = await open({ directory: true, defaultPath: dir || undefined, title: "Choose where clips are saved" });
+    if (typeof chosen === "string") setDir(chosen);
+  };
+
+  const save = async () => {
+    setSaveError(null);
+    try {
+      await api.saveSettings({ download_dir: dir.trim(), default_length: parseInt(length, 10), editor, retime, conform });
+      onClose();
+    } catch (e) {
+      // Shown here too: the log is behind this dialog, so a silent failure
+      // just looked like a button that does nothing.
+      const msg = String((e as Error).message ?? e);
+      setSaveError(msg);
+      onLog(`ERROR saving settings: ${msg}`);
+    }
+  };
+
+  const t = state.tools;
+  const pyOk = Boolean(resolveEnv?.python_ok);
+  const libOk = Boolean(resolveEnv?.lib_exists);
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div className="dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <header className="dialog-head">
+          <h2>Settings</h2>
+          <button type="button" className="icon-btn icon-btn-sm" onClick={onClose} aria-label="Close"><X size={16} /></button>
+        </header>
+        <div className="dialog-body">
+          <Card>
+            <h3 className="card-title">Editor</h3>
+            <p className="card-subtitle">Where YEET pastes the clip.</p>
+            <Segmented<Editor>
+              options={[
+                { value: "resolve", label: "DaVinci Resolve" },
+                { value: "premiere", label: "Premiere Pro" },
+              ]}
+              value={editor}
+              onChange={(e) => {
+                // Applied at once, not on Save: someone who picks Premiere,
+                // installs the panel and closes the dialog with × should be
+                // on Premiere.
+                setEditor(e);
+                api.saveSettings({ editor: e }).catch((err) => onLog(`ERROR saving settings: ${String(err)}`));
+              }}
+            />
+            {editor === "resolve" && (
+              <div className="premiere-setup">
+                <p className="field-label">When the clip's frame rate differs from the timeline's</p>
+                <Segmented<Retime>
+                  options={[
+                    { value: "nearest", label: "Nearest" },
+                    { value: "blend", label: "Frame Blend" },
+                    { value: "optical", label: "Optical Flow" },
+                    { value: "project", label: "Project" },
+                  ]}
+                  value={retime}
+                  onChange={setRetime}
+                />
+                <p className="hint">
+                  Set on each clip as it's inserted. A 60 fps clip on a 24p timeline judders with Nearest;
+                  Frame Blend is smooth and cheap; Optical Flow is smoothest and GPU-heavy.
+                </p>
+                <ResolveMenuSetup api={api} state={state} toolBusy={toolBusy} />
+              </div>
+            )}
+            {editor === "premiere" && (
+              <div className="premiere-setup">
+                <p className="hint">
+                  Premiere is driven through a small YEETingus panel inside it. Install it once, open it from
+                  <b>Window → UXP Plugins → YEETingus</b>, dock it and save your workspace — Premiere then
+                  brings it back every launch. Keep YEETingus running; the panel connects by itself.
+                </p>
+                <dl className="tools">
+                  <dt>Panel</dt>
+                  <dd className={state.premiere.installed === null ? "bad" : ""}>
+                    {state.premiere.installed === "?"
+                      ? "checking…"
+                      : state.premiere.installed === null
+                        ? "not installed"
+                        : `installed (${state.premiere.installed})`}
+                    {" · "}
+                    <span className={state.premiere.connected ? "ok" : "bad"}>
+                      {state.premiere.connected
+                        ? `open in Premiere ${state.premiere.panel.version ?? ""}`
+                        : "not open in Premiere"}
+                    </span>
+                  </dd>
+                  <dt>Installer</dt>
+                  <dd className={state.premiere.installer ? "" : "bad"}>
+                    {state.premiere.installer ? "Adobe's plugin installer found" : "Adobe's plugin installer not found (needs Creative Cloud 5.5+)"}
+                  </dd>
+                </dl>
+                <div className="stack">
+                  <Button
+                    block
+                    onClick={() => api.installPremierePanel()}
+                    disabled={state.busy || toolBusy.premiere || !state.premiere.installer || !state.premiere.panel_source}
+                  >
+                    {toolBusy.premiere ? "Installing…" : state.premiere.installed && state.premiere.installed !== "?" ? "Reinstall the Premiere panel" : "Install the Premiere panel"}
+                  </Button>
+                  {state.premiere.last_install && (
+                    <p className={`install-result ${state.premiere.last_install.startsWith("ok") ? "ok" : "bad"}`}>
+                      {state.premiere.last_install.replace(/^(ok|error): /, "")}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <h3 className="card-title">Match the timeline</h3>
+            <p className="card-subtitle">Take the load off your editor: you're handed exactly the file for your timeline.</p>
+            <Segmented<Conform>
+              options={[
+                { value: "sharp", label: "Sharp" },
+                { value: "blend", label: "Blend" },
+                { value: "off", label: "Keep source rate" },
+              ]}
+              value={conform}
+              onChange={setConform}
+            />
+            <p className="hint">
+              The clip is converted once, here, to the timeline's frame rate. <b>Sharp</b> keeps every frame crisp
+              (a 60 fps clip on 24p gets the same 2-3 pulldown cadence any NLE gives it). <b>Blend</b> mixes
+              neighbouring frames: smoother, but ghosted on fast footage. Smooth <i>and</i> sharp needs optical
+              flow: choose <b>Keep source rate</b> and set the Resolve retime below to Optical Flow.
+            </p>
+          </Card>
+
+          <Card>
+            <h3 className="card-title">Clip storage</h3>
+            <p className="card-subtitle">Downloaded clips are saved here.</p>
+            <div className="row dir-row">
+              <Field value={dir} onChange={(e) => setDir(e.target.value)} spellCheck={false} />
+              {canBrowse && <Button onClick={browse}>Browse…</Button>}
+            </div>
+            <p className="hint">Existing clips are left where they are.</p>
+          </Card>
+
+          <Card>
+            <h3 className="card-title">Default clip length</h3>
+            <p className="card-subtitle">End point set from the in point when the app opens.</p>
+            <Segmented
+              options={LENGTH_CHOICES.map((s) => ({ value: String(s), label: `${s}s` }))}
+              value={length}
+              onChange={setLength}
+            />
+          </Card>
+
+          <Card>
+            <h3 className="card-title">Tools</h3>
+            <p className="card-subtitle">What YEETingus found on this machine.</p>
+            <dl className="tools">
+              <dt>yt-dlp</dt><dd>{t.ytdlp}</dd>
+              <dt>ffmpeg</dt><dd>{t.ffmpeg}</dd>
+              <dt>video</dt><dd>{t.video}</dd>
+              <dt>JS</dt><dd>{t.js}</dd>
+              <dt>Resolve</dt>
+              <dd className={resolveEnv && !(pyOk && libOk) ? "bad" : ""}>
+                {resolveEnv
+                  ? `Python ${String(resolveEnv.python)} ${pyOk ? "OK" : "UNSUPPORTED"} · library ${libOk ? "found" : "MISSING"}`
+                  : "…"}
+              </dd>
+            </dl>
+            <div className="stack">
+              <Button block onClick={() => api.updateYtdlp()} disabled={state.busy || toolBusy.ytdlp}>Update yt-dlp</Button>
+              {!t.deno_path && (
+                <Button block onClick={() => api.installJs()} disabled={state.busy || toolBusy.js}>Install JavaScript runtime (Deno)</Button>
+              )}
+              {t.ffmpeg_manual && !t.ffmpeg_path && (
+                <Button block onClick={() => api.installFfmpeg()} disabled={state.busy || toolBusy.ffmpeg}>Install ffmpeg (Homebrew)</Button>
+              )}
+            </div>
+          </Card>
+        </div>
+        <footer className="dialog-foot">
+          <span className="credit">
+            {state.app} v{version} · <a href={AUTHOR_URL} target="_blank" rel="noreferrer">© 2026 haej</a>
+          </span>
+          <span className="log-spacer" />
+          {saveError && <span className="install-result bad">Couldn't save: {saveError}</span>}
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={save}>Save</Button>
+        </footer>
+      </div>
+    </div>
+  );
+}

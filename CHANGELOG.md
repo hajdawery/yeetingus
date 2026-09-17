@@ -5,6 +5,43 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [2.0.0] — 2026-09-17
+
+The rewrite. A new window (Tauri + React) on a new architecture (one Python
+service doing the work, any front end driving it), Premiere Pro support, a
+clip history, and a first-run setup. The download → prepare pipeline from
+1.4.0 is carried over unchanged. `FEATURES.md` lists every user-facing change;
+the short version:
+
+### Added
+
+- **New app.** Native window with a web view, ~10 MB, dark and light theme,
+  fluid two-column layout that follows the window. AutoSubs-style: controls
+  on the left, content on the right, one action button at the bottom.
+- **Clips history**: every finished clip, newest first, with thumbnail,
+  title, channel, length, size and date. Per clip: insert into the timeline,
+  play, open the video's page, open its folder, delete (two-step, inline).
+  Click the title or channel to copy it.
+- **Link preview** with a green Ready badge; **age-restricted videos detected
+  before downloading**.
+- **Length slider** (0:01–5:00) beside the 15/30/60/Whole presets.
+- **Premiere Pro.** Settings → Editor. A one-click panel install through
+  Adobe's own installer; the panel is docked once and lives in the workspace.
+  Premiere can't decode AV1, so for Premiere the preparation pass makes HEVC.
+- **First-run setup** asking which editor you use.
+- `backend/engine.py` (the app without a window), `backend/service.py`
+  (the same over localhost HTTP + SSE), `backend/premiere_bridge.py`,
+  `premiere/panel/` (the UXP panel), `app/` (the Tauri window).
+
+### Changed
+
+- Accent colour is now a muted olive; the yellow stays in the logo.
+- The credit reads "haej".
+- The Tk window (`backend/yeet_app.py`) still runs, now as a thin shell over
+  the engine, and is no longer the shipped UI.
+
+---
+
 ## [1.4.0] — 2026-09-16
 
 The old re-encoding codec is gone. Every download is now converted into a
