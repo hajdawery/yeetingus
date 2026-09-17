@@ -313,7 +313,7 @@ export default function App() {
               loading={clipsLoading}
               busy={busy}
               canInsert={ready && resolveOk}
-              onInsert={(c) => api?.insertClip(c.path, insertAt)}
+              onInsert={(list) => api?.insertClip(list.map((c) => c.path), insertAt)}
               onPlay={(c) => api?.playClip(c.path)}
               onOpen={(c) => api?.openClipFolder(c.path)}
               onDelete={async (list) => {

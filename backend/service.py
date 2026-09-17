@@ -49,7 +49,7 @@ comes from a native origin (no Origin header, or file://) — the UXP panel can'
 know a per-launch token. A browser page always sends an http(s) Origin and is
 still refused. Same reasoning as Sherlock's bridge.
     GET  /api/clips                  {clips: [...]} every finished clip on disk
-    POST /api/clips/insert           {path, insert_at} -> {started}
+    POST /api/clips/insert           {path | paths, insert_at} -> {started}
     POST /api/clips/delete           {path} -> {deleted}
     POST /api/clips/open             {path} opens that clip's folder
     POST /api/clips/play             {path} opens the clip in the default player
@@ -371,10 +371,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def r_clips_insert(self, _q) -> None:
         body = self._read_json()
-        path = str(body.get("path", "")).strip()
-        if not path:
+        raw = body.get("paths")
+        if not isinstance(raw, list):
+            raw = [body.get("path", "")]
+        paths = [str(p).strip() for p in raw if str(p).strip()]
+        if not paths:
             raise ApiError(400, "path is required")
-        started = self.engine.start_insert(path, str(body.get("insert_at", "playhead")))
+        started = self.engine.start_insert(paths, str(body.get("insert_at", "playhead")))
         self._send_json({"started": started}, 200 if started else 409)
 
     def r_clips_delete(self, _q) -> None:

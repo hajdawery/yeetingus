@@ -7,7 +7,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 
 use serde::Serialize;
 use tauri::Manager;
@@ -22,6 +22,31 @@ struct ServiceInfo {
 struct ServiceState {
     info: ServiceInfo,
     child: Mutex<Option<Child>>,
+}
+
+/// The service starts on a background thread so the window can paint at
+/// once; `service_info` waits here until the handshake is in (or failed).
+#[derive(Default)]
+struct ServiceSlot {
+    result: Mutex<Option<Result<ServiceInfo, String>>>,
+    ready: Condvar,
+}
+
+impl ServiceSlot {
+    fn wait(&self) -> Result<ServiceInfo, String> {
+        let mut guard = self.result.lock().map_err(|e| e.to_string())?;
+        while guard.is_none() {
+            guard = self.ready.wait(guard).map_err(|e| e.to_string())?;
+        }
+        guard.as_ref().cloned().unwrap()
+    }
+
+    fn set(&self, value: Result<ServiceInfo, String>) {
+        if let Ok(mut guard) = self.result.lock() {
+            *guard = Some(value);
+        }
+        self.ready.notify_all();
+    }
 }
 
 /// A random bearer token so nothing else on this machine can drive the
@@ -158,8 +183,11 @@ fn focus_main(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn service_info(state: tauri::State<'_, ServiceState>) -> ServiceInfo {
-    state.info.clone()
+async fn service_info(slot: tauri::State<'_, Arc<ServiceSlot>>) -> Result<ServiceInfo, String> {
+    let slot = Arc::clone(&slot);
+    tauri::async_runtime::spawn_blocking(move || slot.wait())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -183,8 +211,19 @@ pub fn run() {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let _ = app.deep_link().register_all();
             }
-            let state = start_service(&app.handle())?;
-            app.manage(state);
+            // Starting the service (a frozen Python app) takes a few
+            // seconds; doing it here on the main thread kept the window
+            // blank until it answered. Spawn it and let the page wait.
+            let slot = Arc::new(ServiceSlot::default());
+            app.manage(Arc::clone(&slot));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || match start_service(&handle) {
+                Ok(state) => {
+                    slot.set(Ok(state.info.clone()));
+                    handle.manage(state);
+                }
+                Err(e) => slot.set(Err(e)),
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

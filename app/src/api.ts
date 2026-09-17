@@ -199,8 +199,10 @@ export class Api {
   clips() {
     return this.call<{ clips: Clip[] }>("GET", "/api/clips").then((r) => r.clips);
   }
-  insertClip(path: string, insert_at: string) {
-    return this.call<{ started: boolean }>("POST", "/api/clips/insert", { path, insert_at }).catch((e) => {
+  /** One clip or several, pasted in order as a single job. */
+  insertClip(path: string | string[], insert_at: string) {
+    const body = Array.isArray(path) ? { paths: path, insert_at } : { path, insert_at };
+    return this.call<{ started: boolean }>("POST", "/api/clips/insert", body).catch((e) => {
       if (e instanceof ApiError && e.status === 409) return { started: false };
       throw e;
     });

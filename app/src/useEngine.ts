@@ -55,7 +55,7 @@ export function useEngine(): Engine {
       try {
         a = new Api(await resolveService());
       } catch (e) {
-        setError(`Couldn't find the service: ${String(e)}`);
+        setError(`Couldn't start the service: ${String(e)}`);
         return;
       }
       if (cancelled) return;

@@ -1739,12 +1739,18 @@ class Engine:
         self._durations_thread = threading.Thread(target=sweep, daemon=True)
         self._durations_thread.start()
 
-    def start_insert(self, path: str, insert_at: str) -> bool:
-        """Paste a clip that's already on disk into the timeline. Same busy
-        slot as a job, so the buttons behave the same way."""
-        if not self._inside_library(path) or not os.path.isfile(path):
-            self.log("ERROR: that clip isn't in the clips folder any more.")
+    def start_insert(self, paths: list[str] | str, insert_at: str) -> bool:
+        """Paste clips that are already on disk into the timeline, in order.
+        Same busy slot as a job, so the buttons behave the same way."""
+        if isinstance(paths, str):
+            paths = [paths]
+        paths = [p for p in paths if p]
+        if not paths:
             return False
+        for path in paths:
+            if not self._inside_library(path) or not os.path.isfile(path):
+                self.log("ERROR: that clip isn't in the clips folder any more.")
+                return False
         if insert_at not in INSERT_MODES:
             self.log(f"ERROR: unknown insert mode '{insert_at}'.")
             return False
@@ -1753,27 +1759,40 @@ class Engine:
                 return False
             self.cancel_event.clear()
             self._set_busy(True)
-        threading.Thread(target=self._insert_existing, args=(path, insert_at),
+        threading.Thread(target=self._insert_existing, args=(paths, insert_at),
                          daemon=True).start()
         return True
 
-    def _insert_existing(self, path: str, insert_at: str) -> None:
+    def _insert_existing(self, paths: list[str], insert_at: str) -> None:
+        total = len(paths)
         try:
             self.cancel_event.clear()
-            usable = self._for_editor(path)
-            if usable is None:
-                self._progress(0.0, "Failed — see log")
-                self.reveal_log()
-                return
-            path = usable
-            self._progress(P_INSERT, "Pasting into timeline…")
-            self.log(f"Sending {os.path.basename(path)} to "
-                     + ("Premiere…" if self.editor == "premiere" else "Resolve…"))
-            res = self._editor_insert(path, insert_at)
-            self.log(f"Inserted '{res['clipName']}' at frame "
-                     f"{res['insertedFrame']}. Done.")
-            self._note_retime(res)
-            self._progress(1.0, f"Done — {res['clipName']}")
+            last = None
+            for i, path in enumerate(paths):
+                if self.cancel_event.is_set():
+                    self.log("Cancelled.")
+                    self._progress(0.0, "Cancelled")
+                    return
+                which = f" ({i + 1}/{total})" if total > 1 else ""
+                usable = self._for_editor(path)
+                if usable is None:
+                    self._progress(0.0, "Failed — see log")
+                    self.reveal_log()
+                    return
+                path = usable
+                self._progress(P_INSERT + (1.0 - P_INSERT) * i / total,
+                               f"Pasting into timeline…{which}")
+                self.log(f"Sending {os.path.basename(path)} to "
+                         + ("Premiere…" if self.editor == "premiere" else "Resolve…")
+                         + which)
+                res = self._editor_insert(path, insert_at)
+                self.log(f"Inserted '{res['clipName']}' at frame "
+                         f"{res['insertedFrame']}. Done.")
+                self._note_retime(res)
+                last = res
+            if last is not None:
+                self._progress(1.0, f"Done — {total} clips" if total > 1
+                               else f"Done — {last['clipName']}")
             self.check_connection(quiet=True)
         except resolve_bridge.ResolveError as e:
             self.log(f"RESOLVE: {e}")

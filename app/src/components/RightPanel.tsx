@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Clip, Meta } from "../api";
 import { Alert, Check, CheckSquare, Download, Film, Folder, Link, Play, Refresh, Square, Trash, User, X } from "../icons";
 import { secondsToTimestamp, toSeconds } from "../time";
@@ -9,6 +9,31 @@ function thumbFor(clip: Clip): string | null {
   if (clip.thumbnail) return clip.thumbnail;
   if (/^[A-Za-z0-9_-]{11}$/.test(clip.id)) return `https://i.ytimg.com/vi/${clip.id}/mqdefault.jpg`;
   return null;
+}
+
+/** A thumbnail that falls back to a placeholder when the URL is missing, 404s, or
+ *  comes back as a stub image (YouTube serves a tiny grey frame for gone videos). */
+function Thumb({ src, className, iconSize, children }: {
+  src: string | null | undefined; className: string; iconSize: number; children?: ReactNode;
+}) {
+  const [broken, setBroken] = useState<string | null>(null);
+  const ok = Boolean(src) && broken !== src;
+  return (
+    <div className={`${className} ${ok ? "" : "is-empty"}`}>
+      {ok ? (
+        <img
+          src={src!}
+          alt=""
+          loading="lazy"
+          onError={() => setBroken(src!)}
+          onLoad={(e) => { if (e.currentTarget.naturalWidth < 150) setBroken(src!); }}
+        />
+      ) : (
+        <span className="thumb-placeholder"><Film size={iconSize} /><span>No thumbnail</span></span>
+      )}
+      {ok && children}
+    </div>
+  );
 }
 
 function fmtSize(bytes: number): string {
@@ -50,10 +75,9 @@ export function PreviewCard({ meta, loading, url, onClear }: {
   const ready = Boolean(meta && !meta.age_restricted && (meta.title || meta.heights.length));
   return (
     <div className={`preview ${ready ? "is-ready" : ""}`}>
-      <div className={`preview-thumb ${thumb ? "" : "is-empty"}`}>
-        {thumb ? <img src={thumb} alt="" /> : <Film size={22} />}
-        {meta?.duration != null && thumb && <span className="thumb-duration">{secondsToTimestamp(meta.duration)}</span>}
-      </div>
+      <Thumb src={thumb} className="preview-thumb" iconSize={22}>
+        {meta?.duration != null && <span className="thumb-duration">{secondsToTimestamp(meta.duration)}</span>}
+      </Thumb>
       <div className="preview-text">
         <div className="preview-title">{meta?.title || (loading ? "Looking it up…" : meta ? "Unknown title" : "…")}</div>
         <div className="preview-channel"><User size={14} />{meta?.channel || (loading ? "" : meta ? "Unknown channel" : "")}</div>
@@ -78,7 +102,8 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
   loading: boolean;
   busy: boolean;
   canInsert: boolean;
-  onInsert: (clip: Clip) => void;
+  /** Inserts the given clips, in order, as one job. */
+  onInsert: (clips: Clip[]) => void;
   onPlay: (clip: Clip) => void;
   onOpen: (clip: Clip) => void;
   /** Deletes the given clips, in order. */
@@ -96,15 +121,18 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
     } catch { /* clipboard blocked; nothing sensible to do */ }
   };
 
-  // Selection mode: the checklist icon in the header turns rows into
-  // checkboxes; a bar at the bottom deletes the ticked ones in one go
-  // (two steps — Delete, then Confirm — no dialog).
-  const [selecting, setSelecting] = useState(false);
+  // Selection mode: the insert or trash icon in the header turns rows into
+  // checkboxes; a bar at the bottom acts on the ticked ones in one go.
+  // Deleting takes two steps — Delete, then Confirm — no dialog.
+  const [mode, setMode] = useState<"insert" | "delete" | null>(null);
+  const selecting = mode !== null;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [armed, setArmed] = useState(false);
   const toggle = (path: string) =>
     setSelected((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
-  const leave = () => { setSelecting(false); setSelected(new Set()); setArmed(false); };
+  const leave = () => { setMode(null); setSelected(new Set()); setArmed(false); };
+  const enter = (m: "insert" | "delete") => { if (mode === m) leave(); else { setMode(m); setSelected(new Set()); setArmed(false); } };
+  const chosen = () => all.filter((c) => selected.has(c.path));
   const all = clips ?? [];
   const allSelected = all.length > 0 && selected.size === all.length;
 
@@ -115,10 +143,18 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
         <span className="panel-count">{clips ? clips.length : ""}</span>
         <span className="log-spacer" />
         <IconButton
-          label={selecting ? "Done selecting" : "Select clips to delete"}
-          className={selecting ? "is-active" : ""}
+          label={mode === "insert" ? "Done selecting" : "Select clips to YEET into the timeline"}
+          className={mode === "insert" ? "is-active" : ""}
+          disabled={!clips || clips.length === 0 || !canInsert}
+          onClick={() => enter("insert")}
+        >
+          <Download size={18} />
+        </IconButton>
+        <IconButton
+          label={mode === "delete" ? "Done selecting" : "Select clips to delete"}
+          className={mode === "delete" ? "is-active" : ""}
           disabled={!clips || clips.length === 0}
-          onClick={() => (selecting ? leave() : setSelecting(true))}
+          onClick={() => enter("delete")}
         >
           <Trash size={18} />
         </IconButton>
@@ -143,9 +179,7 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
               className={`clip ${isSelected ? "is-selected" : ""}`}
               onClick={selecting ? () => toggle(clip.path) : undefined}
             >
-              <div className={`clip-thumb ${thumb ? "" : "is-empty"}`}>
-                {thumb ? <img src={thumb} alt="" loading="lazy" /> : <Film size={18} />}
-              </div>
+              <Thumb src={thumb} className="clip-thumb" iconSize={18} />
               <div className="clip-text">
                 <button
                   type="button"
@@ -175,7 +209,7 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
               </div>
               {!selecting && (
                 <div className="clip-actions">
-                  <IconButton label="YEET into the timeline" className="clip-yeet" disabled={busy || !canInsert} onClick={() => onInsert(clip)}>
+                  <IconButton label="YEET into the timeline" className="clip-yeet" disabled={busy || !canInsert} onClick={() => onInsert([clip])}>
                     <Download size={18} />
                   </IconButton>
                   <IconButton label="Play in your video player" onClick={() => onPlay(clip)}><Play size={18} /></IconButton>
@@ -207,11 +241,19 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
           </button>
           <span className="select-count">{selected.size} selected</span>
           <span className="log-spacer" />
-          {armed ? (
+          {mode === "insert" ? (
+            <>
+              <button type="button" className="btn btn-primary btn-sm" disabled={selected.size === 0 || busy || !canInsert}
+                onClick={() => { onInsert(chosen()); leave(); }}>
+                <Download size={16} /> YEET {selected.size || ""}
+              </button>
+              <button type="button" className="btn btn-sm" onClick={leave}>Cancel</button>
+            </>
+          ) : armed ? (
             <>
               <span className="select-count bad">Delete {selected.size} clip{selected.size === 1 ? "" : "s"} from disk?</span>
               <button type="button" className="btn btn-danger btn-sm" disabled={busy}
-                onClick={() => { onDelete(all.filter((c) => selected.has(c.path))); leave(); }}>
+                onClick={() => { onDelete(chosen()); leave(); }}>
                 Delete
               </button>
               <button type="button" className="btn btn-sm" onClick={() => setArmed(false)}>Keep</button>
