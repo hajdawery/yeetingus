@@ -52,30 +52,36 @@ fn service_command(app: &tauri::AppHandle) -> Result<Command, String> {
         cmd.arg(script);
         Ok(cmd)
     } else {
-        let exe_dir = std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .parent()
-            .ok_or("no exe dir")?
-            .to_path_buf();
+        // The frozen service is a folder (see build.py build_service), shipped
+        // as a Tauri resource: <resource dir>/service/yeetingus-service[.exe].
+        // On Windows the resource dir is the install dir; on macOS it's
+        // Contents/Resources inside the bundle.
         let name = if cfg!(windows) {
             "yeetingus-service.exe"
         } else {
             "yeetingus-service"
         };
-        let path = exe_dir.join(name);
-        if !path.is_file() {
-            // Also accept the Tauri resource dir, for bundles that put it there.
-            let alt = app
-                .path()
-                .resource_dir()
-                .map_err(|e| e.to_string())?
-                .join(name);
-            if alt.is_file() {
-                return Ok(Command::new(alt));
+        let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+        let exe_dir = std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .parent()
+            .ok_or("no exe dir")?
+            .to_path_buf();
+        let candidates = [
+            resource_dir.join("service").join(name),
+            exe_dir.join("service").join(name),
+            exe_dir.join(name), // a 2.0.0 one-file leftover, if someone has one
+        ];
+        for path in &candidates {
+            if path.is_file() {
+                let mut cmd = Command::new(path);
+                if let Some(dir) = path.parent() {
+                    cmd.current_dir(dir);
+                }
+                return Ok(cmd);
             }
-            return Err(format!("service binary missing: {}", path.display()));
         }
-        Ok(Command::new(path))
+        Err(format!("service missing: {}", candidates[0].display()))
     }
 }
 

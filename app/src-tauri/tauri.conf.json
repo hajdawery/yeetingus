@@ -37,14 +37,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/yeetingus-service"
-    ],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installMode": "currentUser"
       }
+    },
+    "resources": {
+      "resources/service/**/*": "service/"
     }
   },
   "plugins": {

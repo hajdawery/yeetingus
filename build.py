@@ -252,12 +252,15 @@ def rust_triple() -> str:
 
 
 def build_service() -> int:
-    """Freeze backend/service.py as the Tauri app's sidecar.
+    """Freeze backend/service.py as the folder the Tauri app ships.
 
-    The 2.0 app is a Tauri window plus this service. Tauri bundles an
-    "external binary" from src-tauri/binaries/<name>-<target triple>[.exe]
-    and installs it beside the app exe as <name>[.exe] — which is exactly
-    where lib.rs looks for it.
+    A FOLDER, not a one-file exe, on purpose. PyInstaller's --onefile stub
+    unpacks itself to %TEMP% and runs from there, which is the single
+    behaviour heuristic scanners dislike most; an unsigned one that then
+    downloads and spawns other executables got quarantined on first launch
+    (Malwarebytes "Malware.AI", 2.0.0). --onedir runs in place, like any
+    other program. The folder goes to src-tauri/resources/service and Tauri
+    copies it into the install directory; lib.rs looks for it there.
 
     Console subsystem on purpose: the app reads the port from the service's
     stdout, and a --windowed PyInstaller exe has no stdout. Tauri starts it
@@ -274,17 +277,19 @@ def build_service() -> int:
     except ImportError:
         subprocess.run([sys.executable, "-m", "pip", "install", "-U", "pyinstaller"], check=True)
 
-    out_dir = os.path.join(HERE, "app", "src-tauri", "binaries")
+    out_dir = os.path.join(HERE, "app", "src-tauri", "resources")
+    shutil.rmtree(os.path.join(out_dir, "service"), ignore_errors=True)
     os.makedirs(out_dir, exist_ok=True)
-    name = f"yeetingus-service-{rust_triple()}"
+    name = "service"          # the folder; the exe inside is yeetingus-service
     panel = os.path.join(HERE, "premiere", "panel")
     work = os.path.join(HERE, "build", "service")
     shutil.rmtree(work, ignore_errors=True)
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--noconfirm", "--clean", "--onefile", "--console",
-        "--name", name,
+        "--noconfirm", "--clean", "--onedir", "--console",
+        "--contents-directory", "lib",     # exe at the top, everything else under lib/
+        "--name", "yeetingus-service",
         "--distpath", out_dir,
         "--workpath", work,
         "--specpath", work,
@@ -311,7 +316,7 @@ def build_service() -> int:
     ]
     if WINDOWS:
         cmd += ["--version-file", write_version_resource(
-            name, f"{NAME} service — the engine behind the {NAME} window")]
+            "yeetingus-service", f"{NAME} service — the engine behind the {NAME} window")]
         ico = os.path.join(HERE, "assets", f"{NAME.lower()}.ico")
         if os.path.isfile(ico):
             cmd += ["--icon", ico]
@@ -319,7 +324,13 @@ def build_service() -> int:
     rc = subprocess.run(cmd, cwd=HERE).returncode
     if rc != 0:
         return rc
-    exe = os.path.join(out_dir, name + (".exe" if WINDOWS else ""))
+    # PyInstaller names the folder after --name; rename it to the fixed
+    # "service" that tauri.conf.json's resources entry expects.
+    built = os.path.join(out_dir, "yeetingus-service")
+    final = os.path.join(out_dir, name)
+    if os.path.isdir(built):
+        os.replace(built, final)
+    exe = os.path.join(final, "yeetingus-service" + (".exe" if WINDOWS else ""))
     if not os.path.isfile(exe):
         print(f"ERROR: build reported success but {exe} is missing.")
         return 1

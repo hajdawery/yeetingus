@@ -36,6 +36,7 @@ app/dist/
 app/src-tauri/target/
 app/src-tauri/gen/
 app/src-tauri/binaries/
+app/src-tauri/resources/service/
 
 # Claude desktop dev-server config
 .claude/
