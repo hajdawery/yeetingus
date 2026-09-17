@@ -193,7 +193,8 @@ _SIBLING_RE = re.compile(r"\.(?:hevc|av1)\.mp4$", re.IGNORECASE)
 
 
 _EMPTY_META = {"id": "", "title": "", "channel": "", "heights": [],
-               "duration": None, "thumbnail": None, "age_restricted": False}
+               "duration": None, "thumbnail": None, "age_restricted": False,
+               "extractor": "", "description": ""}
 
 # yt-dlp's wording for a video that needs a signed-in session:
 # "Sign in to confirm your age. Use --cookies-from-browser or --cookies ...".
@@ -1120,6 +1121,8 @@ class Engine:
                     "duration": data.get("duration"),
                     "thumbnail": data.get("thumbnail"),
                     "age_restricted": False,
+                    "extractor": data.get("extractor_key") or data.get("extractor") or "",
+                    "description": data.get("description") or "",
                 }
             tail = (proc.stderr or "").strip().splitlines()
             if tail and _looks_age_gated(tail[-1]):
@@ -1928,9 +1931,14 @@ class Engine:
             return None
         video_id = meta.get("id") or "unknown-id"
 
-        # "<ID> - <title> - <channel>", sanitised for any OS.
+        # "<ID> - <title> - <channel>", sanitised for any OS. Posts (X and the
+        # like) have no title, only their text, which makes a mess of a folder
+        # name — those get "<ID> - <channel>".
+        folder_title = "" if naming.title_is_post_text(
+            meta.get("extractor", ""), meta.get("title", ""),
+            meta.get("description", ""), meta.get("channel", "")) else meta.get("title", "")
         job_dir = naming.ensure_clip_folder(
-            self.download_dir, video_id, meta.get("title", ""), meta.get("channel", ""))
+            self.download_dir, video_id, folder_title, meta.get("channel", ""))
         whole = start is None or end is None
         channel = meta.get("channel", "")
 

@@ -173,6 +173,37 @@ def compact_token(text: str, max_len: int = 32) -> str:
     return _or_fallback(text, token[:max_len])
 
 
+# yt-dlp extractors whose "title" is the post's text rather than a title.
+_POST_EXTRACTORS = ("twitter", "x", "bluesky", "bsky", "mastodon", "threads",
+                    "facebook", "instagram", "reddit", "tiktok", "vk")
+
+
+def _norm(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def title_is_post_text(extractor: str, title: str = "", description: str = "",
+                       channel: str = "") -> bool:
+    """True when yt-dlp's title is really the post body, so it shouldn't go
+    into a folder name. Known post sites are listed; any other site counts
+    when the title is just the description (or its start), or is the poster's
+    name followed by the description — the shapes yt-dlp falls back to for
+    videos that have no title of their own."""
+    key = (extractor or "").lower().split(":")[0]
+    if any(key == e or (len(e) > 2 and key.startswith(e)) for e in _POST_EXTRACTORS):
+        return True
+    t, d, c = _norm(title), _norm(description), _norm(channel)
+    if not t or not d:
+        return False
+    if c and t.startswith(c):
+        t = t[len(c):].lstrip(" -:|–—").strip()
+        if not t:
+            return False
+    t = t.rstrip(".…")
+    d_head = d[:len(t)]
+    return len(t) >= 12 and (d.startswith(t) or t.startswith(d) or d_head == t)
+
+
 def folder_name(video_id: str, title: str = "", channel: str = "") -> str:
     """Build "<ID> - <title> - <channel>", omitting parts we don't know."""
     vid = safe_component(video_id, 40) or "unknown-id"

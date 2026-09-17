@@ -8,6 +8,24 @@ const LENGTH_CHOICES = [15, 30, 60, 90];
 
 const AUTHOR_URL = "https://github.com/hajdawery";
 
+/**
+ * One "Frame rate" control over two settings. Sharp and Blend convert the
+ * file here (conform) so no retime is needed; Optical Flow leaves the file
+ * alone and asks Resolve for its optical-flow retime; Off does neither.
+ */
+type FrameRate = "sharp" | "blend" | "optical" | "off";
+const FRAME_RATE: Record<FrameRate, { conform: Conform; retime: Retime }> = {
+  sharp: { conform: "sharp", retime: "nearest" },
+  blend: { conform: "blend", retime: "nearest" },
+  optical: { conform: "off", retime: "optical" },
+  off: { conform: "off", retime: "nearest" },
+};
+function frameRateOf(conform: Conform, retime: Retime): FrameRate {
+  if (conform === "sharp") return "sharp";
+  if (conform === "blend") return "blend";
+  return retime === "optical" ? "optical" : "off";
+}
+
 export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }: {
   api: Api;
   state: EngineState;
@@ -18,8 +36,7 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
 }) {
   const [dir, setDir] = useState(state.settings.download_dir);
   const [editor, setEditor] = useState<Editor>(state.settings.editor);
-  const [retime, setRetime] = useState<Retime>(state.settings.retime);
-  const [conform, setConform] = useState<Conform>(state.settings.conform);
+  const [frameRate, setFrameRate] = useState<FrameRate>(frameRateOf(state.settings.conform, state.settings.retime));
   const [length, setLength] = useState(
     String(LENGTH_CHOICES.reduce((a, b) =>
       Math.abs(b - state.settings.default_length) < Math.abs(a - state.settings.default_length) ? b : a)),
@@ -42,7 +59,7 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
   const save = async () => {
     setSaveError(null);
     try {
-      await api.saveSettings({ download_dir: dir.trim(), default_length: parseInt(length, 10), editor, retime, conform });
+      await api.saveSettings({ download_dir: dir.trim(), default_length: parseInt(length, 10), editor, ...FRAME_RATE[frameRate] });
       onClose();
     } catch (e) {
       // Shown here too: the log is behind this dialog, so a silent failure
@@ -84,21 +101,6 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
             />
             {editor === "resolve" && (
               <div className="premiere-setup">
-                <p className="field-label">When the clip's frame rate differs from the timeline's</p>
-                <Segmented<Retime>
-                  options={[
-                    { value: "nearest", label: "Nearest" },
-                    { value: "blend", label: "Frame Blend" },
-                    { value: "optical", label: "Optical Flow" },
-                    { value: "project", label: "Project" },
-                  ]}
-                  value={retime}
-                  onChange={setRetime}
-                />
-                <p className="hint">
-                  Set on each clip as it's inserted. A 60 fps clip on a 24p timeline judders with Nearest;
-                  Frame Blend is smooth and cheap; Optical Flow is smoothest and GPU-heavy.
-                </p>
                 <ResolveMenuSetup api={api} state={state} toolBusy={toolBusy} />
               </div>
             )}
@@ -148,22 +150,24 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
           </Card>
 
           <Card>
-            <h3 className="card-title">Match the timeline</h3>
-            <p className="card-subtitle">Take the load off your editor: you're handed exactly the file for your timeline.</p>
-            <Segmented<Conform>
+            <h3 className="card-title">Frame rate</h3>
+            <p className="card-subtitle">What happens when a clip's frame rate differs from the timeline's.</p>
+            <Segmented<FrameRate>
               options={[
                 { value: "sharp", label: "Sharp" },
                 { value: "blend", label: "Blend" },
-                { value: "off", label: "Keep source rate" },
+                ...(editor === "resolve" ? [{ value: "optical" as const, label: "Optical Flow" }] : []),
+                { value: "off", label: "Off" },
               ]}
-              value={conform}
-              onChange={setConform}
+              value={editor !== "resolve" && frameRate === "optical" ? "off" : frameRate}
+              onChange={setFrameRate}
             />
             <p className="hint">
-              The clip is converted once, here, to the timeline's frame rate. <b>Sharp</b> keeps every frame crisp
-              (a 60 fps clip on 24p gets the same 2-3 pulldown cadence any NLE gives it). <b>Blend</b> mixes
-              neighbouring frames: smoother, but ghosted on fast footage. Smooth <i>and</i> sharp needs optical
-              flow: choose <b>Keep source rate</b> and set the Resolve retime below to Optical Flow.
+              <b>Sharp</b> and <b>Blend</b> convert the file here, once, to the timeline's rate: Sharp keeps every
+              frame crisp (a 60 fps clip on 24p gets the same 2-3 pulldown any NLE gives it), Blend mixes
+              neighbouring frames, smoother but ghosted on fast footage.
+              {editor === "resolve" && <> <b>Optical Flow</b> keeps the file as is and has Resolve retime it, smooth <i>and</i> sharp, but GPU-heavy.</>}
+              {" "}<b>Off</b> inserts the clip at its own rate and lets the editor cope.
             </p>
           </Card>
 
