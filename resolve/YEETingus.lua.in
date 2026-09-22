@@ -19,9 +19,11 @@
      There is no ShellExecuteA on macOS, so there the order is reversed:
      bmd.openfileexternal first, then /usr/bin/open via os.execute.
 
-  3. LAUNCH THE SHIM, NOT THE APP. Resolve exports PYTHONHOME for its scripting
-     host, and a PyInstaller build that inherits PYTHONHOME segfaults on
-     startup. launch_yeetingus.bat / .sh clears those vars first.
+  3. PYTHONHOME. Resolve exports it for its scripting host, and a PyInstaller
+     build that inherits it segfaults on startup. 1.x launched a .bat / .sh
+     shim that cleared it; 2.x launches the app itself, which strips those
+     vars before starting its service. On macOS the app is the .app bundle,
+     opened through Launch Services, which starts it with a clean environment.
 
   4. Resolve caches this file when it builds the Scripts menu at startup. After
      reinstalling, restart Resolve or it keeps running the old copy.
@@ -126,7 +128,7 @@ local function print_banner()
   print(string.format("  %s %s   |   youtube -> timeline", APP_NAME, VERSION))
   print(line)
   -- For a bundle this is the size of the launcher inside Contents/MacOS, not of
-  -- the bundle as a whole — most of a onedir build sits in Frameworks/. Say so,
+  -- the bundle as a whole -- most of a onedir build sits in Frameworks/. Say so,
   -- rather than printing a number that looks like the app came out ten times
   -- smaller than it did. It still answers the question this banner exists for:
   -- is there something real at that path.
@@ -197,29 +199,48 @@ local function launch_os_win(target)
          "os.execute ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
 end
 
--- macOS/Linux strategy: run the shim through sh, explicitly.
+-- macOS/Linux: the shell command that starts `target`.
 --
--- NOT `open "shim.sh"`. Launch Services resolves a .sh by file association and
--- would hand it to a text editor -- the script opens in a window instead of
--- running, which looks exactly like a silent failure. Naming the interpreter
--- skips association entirely.
+-- A .app bundle (what 2.x installs on macOS) goes through /usr/bin/open, i.e.
+-- Launch Services: a clean launchd environment, and the running copy comes to
+-- the front instead of a second one starting. open returns as soon as the app
+-- is launched, with a real exit status, so it is not backgrounded.
 --
--- Backgrounded with & and detached from stdio, so Resolve's Lua host is never
--- left waiting on a GUI app that runs until the user closes it.
+-- A .sh shim (1.x installs) is run through sh, explicitly. NOT `open "x.sh"`:
+-- Launch Services resolves a .sh by file association and would hand it to a
+-- text editor, which looks exactly like a silent failure.
+--
+-- Anything else is an executable (a dev build) and is run directly. Never
+-- through sh: sh can't run a Mach-O file, and backgrounded with & the failure
+-- would still report success.
+--
+-- Shim and executable are backgrounded and detached from stdio, so Resolve's
+-- Lua host is never left waiting on a GUI app that runs until it is closed.
+local function posix_command(target)
+  if target:sub(-4) == ".app" then
+    return string.format('/usr/bin/open "%s" >>"%s" 2>&1', target, LOG_PATH)
+  elseif target:sub(-3) == ".sh" then
+    return string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
+  end
+  return string.format('"%s" >>"%s" 2>&1 </dev/null &', target, LOG_PATH)
+end
+
 local function launch_sh(target)
-  local cmd = string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
-  local ok, rc = pcall(os.execute, cmd)
+  local ok, rc = pcall(os.execute, posix_command(target))
   return (ok and (rc == true or rc == 0 or rc == nil)),
-         "os.execute sh ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
+         "os.execute ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
 end
 
 -- Same command via io.popen, for a host where os.execute is stubbed out.
+-- LuaJIT's close() doesn't return the exit status, so the command echoes it.
 local function launch_popen(target)
-  local cmd = string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
-  local ok, handle = pcall(io.popen, cmd)
+  local ok, handle = pcall(io.popen, posix_command(target) .. '; echo "rc=$?"')
   if not ok or not handle then return false, "io.popen unavailable" end
+  local out = ""
+  pcall(function() out = handle:read("*a") or "" end)
   pcall(function() handle:close() end)
-  return true, "io.popen spawned"
+  local rc = tonumber(out:match("rc=(%d+)"))
+  return rc == 0, "io.popen rc=" .. tostring(rc)
 end
 
 -- Last resort on macOS: libc system(), reached through LuaJIT's FFI. Same role
@@ -229,7 +250,7 @@ local function launch_ffi_system(target)
   local ok_ffi, ffi = pcall(require, "ffi")
   if not ok_ffi then return false, "no ffi module" end
   pcall(ffi.cdef, [[ int system(const char *command); ]])
-  local cmd = string.format('/bin/sh "%s" >>"%s" 2>&1 &', target, LOG_PATH)
+  local cmd = posix_command(target)
   local ok_call, rc = pcall(function() return ffi.C.system(cmd) end)
   if not ok_call then return false, "system() raised: " .. tostring(rc) end
   return tonumber(rc) == 0, "system() returned " .. tostring(rc)
@@ -245,8 +266,8 @@ local function try_launch(target, workdir, bundle)
     }
   else
     strategies = {
-      { name = "sh (os.execute)", fn = function() return launch_sh(target) end },
-      { name = "sh (io.popen)",   fn = function() return launch_popen(target) end },
+      { name = "os.execute", fn = function() return launch_sh(target) end },
+      { name = "io.popen",   fn = function() return launch_popen(target) end },
       { name = "ffi system()",    fn = function() return launch_ffi_system(target) end },
     }
     -- Only meaningful if an .app bundle was installed; a --dev install has none.

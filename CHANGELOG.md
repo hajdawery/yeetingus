@@ -5,6 +5,22 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [Unreleased]
+
+### Added
+- macOS build of the 2.x app: `build.py --release` on a Mac makes an
+  ad-hoc-signed `YEETingus.app` and `dist/YEETingus-Mac-ARM.dmg`
+  (`app/src-tauri/tauri.macos.conf.json`).
+
+### Fixed
+- The Resolve menu entry couldn't be installed on any platform in 2.1.0: the
+  non-ASCII path check looked at the whole launcher, and the launcher's own
+  comments had an em dash in them. Only the paths are checked now.
+- On macOS the Resolve menu entry did nothing: it ran the app's binary
+  through `sh`, which can't run it, and reported success anyway. It now opens
+  the `.app` through Launch Services, and a launch that fails says so.
+- "Choose the folder in Explorer" is just "Choose the folder".
+
 ## [2.1.0] — 2026-09-22
 
 ### Added

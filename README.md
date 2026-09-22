@@ -143,6 +143,30 @@ py -3.13 build.py --release
 
 That gives you `dist/YEETingus-windows-x86_64.exe` (or `YEETingus-Mac-ARM.dmg`).
 
+### On a Mac
+
+Same steps, with `python3.13` instead of `py -3.13`. You need the python.org 3.13, Xcode's command line tools, Rust and Node:
+
+```bash
+xcode-select --install
+```
+
+```bash
+brew install node ffmpeg
+```
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+```bash
+python3.13 build.py --release
+```
+
+The build is ad-hoc signed, not notarised. A downloaded copy gets blocked the first time: open it once, then System Settings → Privacy & Security → Open Anyway. A copy you built yourself just opens.
+
+Drag YEETingus into Applications before you add the Resolve menu entry in Settings, since the entry remembers where the app was.
+
 ---
 
 ## 📁 Where clips go

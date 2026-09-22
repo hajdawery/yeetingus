@@ -178,7 +178,7 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
             <div className="row dir-row">
               <Field value={dir} onChange={(e) => setDir(e.target.value)} spellCheck={false} />
               {canBrowse && (
-                <IconButton label="Choose the folder in Explorer" className="dir-browse" onClick={browse}>
+                <IconButton label="Choose the folder" className="dir-browse" onClick={browse}>
                   <Folder size={18} />
                 </IconButton>
               )}

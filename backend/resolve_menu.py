@@ -14,6 +14,11 @@ never by itself. Restart Resolve afterwards — it caches the menu at startup.
 The launcher starts the app exe directly. The 1.x shim that cleared
 PYTHONHOME first is no longer needed: the app is a Rust exe, and it strips
 those variables itself before starting the Python service (see lib.rs).
+
+On macOS the launcher is given the .app bundle, not the executable inside
+it: the bundle is opened through Launch Services (/usr/bin/open), which
+starts it with a clean environment and brings up the running copy instead
+of a second one. See launch_target.
 """
 
 from __future__ import annotations
@@ -43,6 +48,24 @@ def template_path() -> str | None:
     return next((c for c in candidates if os.path.isfile(c)), None)
 
 
+def launch_target(app_exe: str | None) -> str | None:
+    """What the launcher should start for `app_exe`.
+
+    On macOS the service is handed Contents/MacOS/<binary>; the launcher
+    wants the enclosing .app. A dev build (target/debug/yeetingus) has no
+    bundle and is started as it is.
+    """
+    if not app_exe or not pp.MACOS:
+        return app_exe
+    macos_dir = os.path.dirname(app_exe)
+    contents = os.path.dirname(macos_dir)
+    bundle = os.path.dirname(contents)
+    if (os.path.basename(macos_dir) == "MacOS" and os.path.basename(contents) == "Contents"
+            and bundle.endswith(".app")):
+        return bundle
+    return app_exe
+
+
 def installed_path() -> str | None:
     """Where our launcher is, if it's in any of Resolve's Scripts folders."""
     for d in pp.scripts_dirs():
@@ -66,6 +89,7 @@ def installed_target() -> str | None:
 
 
 def info(app_exe: str | None) -> dict:
+    app_exe = launch_target(app_exe)
     path = installed_path()
     target = installed_target()
     return {
@@ -102,29 +126,32 @@ def install(app_exe: str | None, log) -> str:
             raise ResolveMenuError(f"Resolve's Scripts folder couldn't be created: {e}. "
                                    "Is DaVinci Resolve installed for this user?")
 
-    app_dir = os.path.dirname(app_exe)
+    target = launch_target(app_exe)
+    app_dir = os.path.dirname(target)
     with open(src, "r", encoding="utf-8") as fh:
         text = fh.read()
-    for token, value in (
+    values = (
         ("@@YEET_DIR@@", app_dir),
-        ("@@SHIM@@", app_exe),          # no shim any more; the app clears the env itself
-        ("@@EXE@@", app_exe),
+        ("@@SHIM@@", target),           # no shim any more; the app clears the env itself
+        ("@@EXE@@", target),
         ("@@LOG@@", os.path.join(pp.app_data_dir(), "launcher.log")),
         ("@@APP_NAME@@", APP_NAME),
         ("@@VERSION@@", __version__),
         ("@@INSTALLED_AT@@", datetime.now().strftime("%Y-%m-%d %H:%M")),
-    ):
+    )
+    if not all(value.isascii() for _, value in values):
+        # Written as ASCII (below), a path like C:\Users\Łukasz would turn
+        # into C:\Users\?ukasz and the menu entry would silently do nothing.
+        # The values, not the rendered text: the template is ours to keep ASCII.
+        raise ResolveMenuError(
+            "the app's path has non-ASCII characters, which Resolve's Lua can't "
+            f"be given reliably: {target}. Install YEETingus to a plain-ASCII folder.")
+    for token, value in values:
         text = text.replace(token, value)
     leftover = re.findall(r"@@[A-Z_]+@@", text)
     if leftover:
         raise ResolveMenuError(f"placeholders left unsubstituted: {sorted(set(leftover))}")
 
-    if not text.isascii():
-        # Written as ASCII (below), a path like C:\Users\Łukasz would turn
-        # into C:\Users\?ukasz and the menu entry would silently do nothing.
-        raise ResolveMenuError(
-            "the app's path has non-ASCII characters, which Resolve's Lua can't "
-            f"be given reliably: {app_exe}. Install YEETingus to a plain-ASCII folder.")
     dest = os.path.join(scripts, LUA_NAME)
     # ASCII + CRLF on Windows: what Resolve's Lua parser has always been given.
     newline = "\r\n" if pp.WINDOWS else "\n"
