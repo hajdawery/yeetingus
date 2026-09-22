@@ -69,6 +69,8 @@ DEFAULTS: dict = {
     # editor never has to retime them: "sharp" (drop/repeat frames), "blend"
     # (mix neighbours), or "off" (keep the source rate; Resolve's retime applies).
     "conform": "sharp",
+    # Ask GitHub now and then whether a newer release is out (see updates.py).
+    "check_updates": True,
 }
 
 # Older versions wrote a re-encode setting that no longer exists. load()

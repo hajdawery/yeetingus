@@ -49,6 +49,7 @@ comes from a native origin (no Origin header, or file://) — the UXP panel can'
 know a per-launch token. A browser page always sends an http(s) Origin and is
 still refused. Same reasoning as Sherlock's bridge.
     GET  /api/clips                  {clips: [...]} every finished clip on disk
+    POST /api/update/check           -> {started}   look for a newer release now
     POST /api/queue                  {url, in, out, quality, title?, thumbnail?} -> {item}
     POST /api/queue/remove           {id} -> {removed}   stops it if running
     POST /api/queue/clear            drops finished/failed/stopped items
@@ -318,6 +319,9 @@ class Handler(BaseHTTPRequestHandler):
         # status code just says so without the client parsing the log.
         self._send_json({"started": started}, 200 if started else 409)
 
+    def r_update_check(self, _q) -> None:
+        self._send_json({"started": self.engine.start_update_check()})
+
     def r_queue_add(self, _q) -> None:
         body = self._read_json()
         label = body.get("quality", "Best available")
@@ -382,7 +386,8 @@ class Handler(BaseHTTPRequestHandler):
                 editor=body.get("editor"),
                 onboarded=body.get("onboarded"),
                 retime=body.get("retime"),
-                conform=body.get("conform"))
+                conform=body.get("conform"),
+                check_updates=body.get("check_updates"))
         except ValueError as e:
             raise ApiError(400, str(e))
         except OSError as e:
@@ -514,6 +519,7 @@ class Handler(BaseHTTPRequestHandler):
         ("POST", "/api/log"): r_log,
         ("POST", "/api/open-folder"): r_open_folder,
         ("GET", "/api/clips"): r_clips,
+        ("POST", "/api/update/check"): r_update_check,
         ("POST", "/api/queue"): r_queue_add,
         ("POST", "/api/queue/remove"): r_queue_remove,
         ("POST", "/api/queue/clear"): r_queue_clear,

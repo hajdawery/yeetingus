@@ -59,11 +59,24 @@ export interface EngineState {
   premiere: Premiere;
   progress: { fraction: number; step: string };
   queue: QueueItem[];
+  update: UpdateInfo;
   tools: Tools;
-  settings: { download_dir: string; default_length: number; editor: Editor; onboarded: boolean; retime: Retime; conform: Conform };
+  settings: { download_dir: string; default_length: number; editor: Editor; onboarded: boolean; retime: Retime; conform: Conform; check_updates: boolean };
   retimes: Retime[];
   quality_options: string[];
   insert_modes: string[];
+}
+
+/** What the last update check found (see backend/updates.py). */
+export interface UpdateInfo {
+  current: string;
+  latest: string | null;
+  available: boolean;
+  page: string | null;
+  download: string | null;
+  checked: number | null;
+  error: string | null;
+  checking: boolean;
 }
 
 /** One entry of the download queue (see engine.queue_add). */
@@ -125,6 +138,7 @@ export type EngineEvent =
   | { kind: "reveal_log"; seq: number; t: number }
   | { kind: "clips"; seq: number; t: number }
   | { kind: "queue"; seq: number; t: number; items: QueueItem[] }
+  | ({ kind: "update"; seq: number; t: number } & UpdateInfo)
   | ({ kind: "state"; seq: number; t: number } & EngineState);
 
 export interface JobRequest {
@@ -190,6 +204,10 @@ export class Api {
   queueRemove(id: string) {
     return this.call<{ removed: boolean }>("POST", "/api/queue/remove", { id });
   }
+  /** Look for a newer release now (the result arrives as an "update" event). */
+  checkUpdate() {
+    return this.call<{ started: boolean }>("POST", "/api/update/check", {});
+  }
   queueClear() {
     return this.call<{ ok: boolean }>("POST", "/api/queue/clear", {});
   }
@@ -217,7 +235,7 @@ export class Api {
   installPremierePanel() {
     return this.call<{ started: boolean }>("POST", "/api/premiere/install", {});
   }
-  saveSettings(s: { download_dir?: string; default_length?: number; editor?: Editor; onboarded?: boolean; retime?: Retime; conform?: Conform }) {
+  saveSettings(s: { download_dir?: string; default_length?: number; editor?: Editor; onboarded?: boolean; retime?: Retime; conform?: Conform; check_updates?: boolean }) {
     return this.call<EngineState["settings"]>("POST", "/api/settings", s);
   }
   log(text: string, tag?: string) {
@@ -268,7 +286,7 @@ export class Api {
     // EventSource can't set headers, hence the token in the query string.
     const url = `${this.base}/api/events?token=${encodeURIComponent(this.info.token)}&since=${since}`;
     const es = new EventSource(url);
-    const kinds = ["log", "progress", "resolve", "busy", "tools", "tool_busy", "reveal_log", "clips", "premiere", "resolve_menu", "settings", "state", "queue"];
+    const kinds = ["log", "progress", "resolve", "busy", "tools", "tool_busy", "reveal_log", "clips", "premiere", "resolve_menu", "settings", "state", "queue", "update"];
     for (const kind of kinds) {
       es.addEventListener(kind, (e) => {
         onEvent(JSON.parse((e as MessageEvent).data) as EngineEvent);
@@ -294,6 +312,17 @@ async function showPath(path: string, reveal: boolean): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Open a web link in the default browser. */
+export async function openExternal(url: string): Promise<void> {
+  const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
+  if (w.__TAURI_INTERNALS__) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener");
 }
 
 /** Where the service is. In Tauri, Rust started it and knows. */

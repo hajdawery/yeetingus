@@ -54,6 +54,7 @@ import naming                    # noqa: E402
 import premiere_bridge           # noqa: E402
 import resolve_bridge            # noqa: E402
 import resolve_menu              # noqa: E402
+import updates                   # noqa: E402
 from version import APP_NAME, __version__  # noqa: E402
 
 # Progress is split into bands so the bar moves through the whole job, not just
@@ -345,6 +346,13 @@ class Engine:
         self.editor = self.settings["editor"]
         self.retime = self.settings["retime"]
         self.conform = self.settings["conform"]
+        self.check_updates = bool(self.settings.get("check_updates", True))
+        # What the last update check found (see check_for_update).
+        self.update_info: dict = {
+            "current": __version__, "latest": None, "available": False,
+            "page": None, "download": None, "checked": None, "error": None,
+            "checking": False,
+        }
         # The timeline's frame rate, read when a job starts (None = unknown).
         self._timeline_fps: Fraction | None = None
         # The Premiere panel's side of the conversation (see premiere_bridge).
@@ -471,6 +479,7 @@ class Engine:
             "booted": self.booted,
             "busy": self.busy,
             "queue": self.queue_snapshot(),
+            "update": dict(self.update_info),
             "editor": self.editor,
             "editors": list(config.EDITORS),
             "resolve": dict(self.resolve_state),
@@ -485,6 +494,7 @@ class Engine:
                 "onboarded": bool(self.settings.get("onboarded")),
                 "retime": self.retime,
                 "conform": self.conform,
+                "check_updates": self.check_updates,
             },
             "retimes": list(config.RETIMES),
             "quality_options": list(QUALITY_OPTIONS),
@@ -498,7 +508,8 @@ class Engine:
                         editor: str | None = None,
                         onboarded: bool | None = None,
                         retime: str | None = None,
-                        conform: str | bool | None = None) -> str | None:
+                        conform: str | bool | None = None,
+                        check_updates: bool | None = None) -> str | None:
         """Apply and persist what changed. Returns the path written, or None if
         nothing changed. Raises ValueError for an unusable value."""
         changed = False
@@ -534,6 +545,13 @@ class Engine:
             if retime != self.retime:
                 self.settings["retime"] = retime
                 self.retime = retime
+                changed = True
+        if check_updates is not None:
+            if not isinstance(check_updates, bool):
+                raise ValueError("check_updates must be true or false")
+            if check_updates != self.check_updates:
+                self.settings["check_updates"] = check_updates
+                self.check_updates = check_updates
                 changed = True
         if conform is not None:
             if conform is True:
@@ -656,7 +674,53 @@ class Engine:
     def start_boot(self) -> threading.Thread:
         t = threading.Thread(target=self.boot, daemon=True)
         t.start()
+        threading.Thread(target=self._update_loop, daemon=True, name="updates").start()
         return t
+
+    # ---- update check ----------------------------------------------------- #
+
+    UPDATE_EVERY = 6 * 3600     # seconds between automatic checks
+
+    def _update_loop(self) -> None:
+        """Check shortly after launch, then every UPDATE_EVERY while running."""
+        time.sleep(5)           # let boot have the network first
+        while True:
+            if self.check_updates:
+                self.check_for_update()
+            time.sleep(self.UPDATE_EVERY)
+
+    def start_update_check(self) -> bool:
+        """A check asked for from Settings: runs even with checks turned off."""
+        if self.update_info.get("checking"):
+            return False
+        threading.Thread(target=self.check_for_update, kwargs={"asked": True},
+                         daemon=True).start()
+        return True
+
+    def check_for_update(self, asked: bool = False) -> None:
+        """Ask GitHub for the latest release and tell the front end. Quiet
+        unless something new turned up or the user asked."""
+        self.update_info["checking"] = True
+        self.emit("update", **self.update_info)
+        try:
+            rel = updates.latest_release()
+            available = updates.is_newer(rel["version"])
+            self.update_info.update(latest=rel["version"], available=available,
+                                    page=rel["page"], download=rel["download"],
+                                    error=None)
+            if available:
+                self.log(f"Update available: {APP_NAME} {rel['version']} "
+                         f"(you have {__version__}).", tag="highlight")
+            elif asked:
+                self.log(f"{APP_NAME} {__version__} is the latest version.")
+        except Exception as e:  # noqa: BLE001 — offline etc. is not an error worth a fuss
+            self.update_info["error"] = str(e)
+            if asked:
+                self.log(f"Couldn't check for updates: {e}")
+        finally:
+            self.update_info["checked"] = time.time()
+            self.update_info["checking"] = False
+            self.emit("update", **self.update_info)
 
     def boot(self) -> None:
         """Resolve dependencies and check Resolve. Blocking."""
@@ -803,6 +867,14 @@ class Engine:
 
     _RETIME_NAMES = {"nearest": "Nearest", "blend": "Frame Blend", "optical": "Optical Flow",
                      "project": "the project default"}
+
+    @staticmethod
+    def _track_note(res: dict) -> str:
+        """" on V2 (new track)" when the clip didn't go on the first track."""
+        n = res.get("trackIndex") or 1
+        if n == 1:
+            return ""
+        return f" on V{n}" + (" (new track)" if res.get("newTrack") or res.get("usedNewTrack") else "")
 
     def _note_retime(self, res: dict) -> None:
         r = res.get("retimed")
@@ -1635,7 +1707,7 @@ class Engine:
                 self._progress(P_INSERT, "Pasting into timeline…")
                 self.log("Sending to " + ("Premiere…" if self.editor == "premiere" else "Resolve…"))
                 res = self._editor_insert(path, insert_at)
-                self.log(f"Inserted '{res['clipName']}' at frame "
+                self.log(f"Inserted '{res['clipName']}'{self._track_note(res)} at frame "
                          f"{res['insertedFrame']}. Done.")
                 self._note_retime(res)
             else:
@@ -2066,7 +2138,7 @@ class Engine:
                          + ("Premiere…" if self.editor == "premiere" else "Resolve…")
                          + which)
                 res = self._editor_insert(path, insert_at)
-                self.log(f"Inserted '{res['clipName']}' at frame "
+                self.log(f"Inserted '{res['clipName']}'{self._track_note(res)} at frame "
                          f"{res['insertedFrame']}. Done.")
                 self._note_retime(res)
                 last = res

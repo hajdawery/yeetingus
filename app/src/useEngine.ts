@@ -97,6 +97,9 @@ export function useEngine(): Engine {
           case "busy":
             setState((s) => s && { ...s, busy: ev.busy, booted: s.booted || !ev.busy });
             break;
+          case "update":
+            setState((s) => s && { ...s, update: stripEvent(ev) });
+            break;
           case "tools":
             setState((s) => s && { ...s, tools: stripEvent(ev) });
             break;

@@ -297,6 +297,7 @@ def build_service() -> int:
         "--hidden-import", "engine",
         "--hidden-import", "premiere_bridge",
         "--hidden-import", "resolve_menu",
+        "--hidden-import", "updates",
         "--hidden-import", "config",
         "--hidden-import", "deps",
         "--hidden-import", "media",

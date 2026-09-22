@@ -5,6 +5,25 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [Unreleased]
+
+### Added
+- Update check: the app asks GitHub for the latest release at launch and
+  every six hours, and when a newer one is out a banner offers its installer
+  for your platform (dismiss it until the next version). Settings shows the
+  version status, a "Check now" and a switch to turn checks off.
+
+### Changed
+- Resolve: when V1/A1 is taken at the insert point, the clip goes on the
+  lowest free (and unlocked) track pair instead, and a new pair is added when
+  every track is taken there. The log says which track it used. Premiere
+  already did this.
+
+### Fixed
+- Resolve: inserting onto an occupied spot reported "Inserted" while nothing
+  was placed (Resolve's API returns success there). The placement is now
+  checked, and a clip that didn't land is reported as an error.
+
 ## [2.1.0] — 2026-09-22
 
 ### Added

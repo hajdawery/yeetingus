@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { Api, Conform, Editor, EngineState, Retime } from "../api";
+import { openExternal, type Api, type Conform, type Editor, type EngineState, type Retime } from "../api";
 import { Folder, X } from "../icons";
-import { Button, Card, Field, IconButton, Segmented } from "./ui";
+import { Button, Card, Field, IconButton, Segmented, Switch } from "./ui";
 import { ResolveMenuSetup } from "./ResolveMenuSetup";
 
 const LENGTH_CHOICES = [15, 30, 60, 90];
@@ -44,6 +44,8 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
   );
   const [resolveEnv, setResolveEnv] = useState<Record<string, unknown> | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [checkUpdates, setCheckUpdates] = useState(state.settings.check_updates ?? true);
+  const up = state.update;
   const downOnBackdrop = useRef(false);
   const [canBrowse, setCanBrowse] = useState(false);
 
@@ -240,9 +242,27 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
         </div>
         <footer className="dialog-foot">
           <span className="credit">
-            {state.app} v{version} · <a href={AUTHOR_URL} target="_blank" rel="noreferrer">© 2026 haej</a>
+            {state.app} v{version}
+            {up.checking && <> · checking…</>}
+            {!up.checking && up.available && (
+              <> · <button type="button" className="link-btn update-link"
+                onClick={() => openExternal(up.download ?? up.page ?? "")}>{up.latest} is out, download</button></>
+            )}
+            {!up.checking && !up.available && up.latest && <> · up to date</>}
+            {" · "}<a href={AUTHOR_URL} target="_blank" rel="noreferrer">© 2026 haej</a>
           </span>
           <span className="log-spacer" />
+          <Switch
+            checked={checkUpdates}
+            onChange={(v) => {
+              // Applied at once, like the editor choice.
+              setCheckUpdates(v);
+              api.saveSettings({ check_updates: v }).catch((err) => onLog(`ERROR saving settings: ${String(err)}`));
+            }}
+            label="Check for updates"
+            hint="Asks GitHub for the latest release when the app starts and every few hours. Nothing else is sent."
+          />
+          <button type="button" className="link-btn" disabled={up.checking} onClick={() => api.checkUpdate()}>Check now</button>
           {saveError && <span className="install-result bad">Couldn't save: {saveError}</span>}
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={save}>Save</Button>

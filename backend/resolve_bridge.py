@@ -15,6 +15,7 @@ MAX_PY below for the verified range.
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 
@@ -210,6 +211,58 @@ def get_timeline_info() -> dict:
 RETIME_PROCESSES = {"project": 0, "nearest": 1, "blend": 2, "optical": 3}
 
 
+def _timeline_length(item, tl, start_frame: int, end_frame: int | None) -> int | None:
+    """How many timeline frames the clip will cover once placed."""
+    try:
+        frames = int(float(item.GetClipProperty("Frames") or 0))
+        clip_fps = float(item.GetClipProperty("FPS") or 0)
+    except (TypeError, ValueError):
+        return None
+    tl_fps = _fps(tl.GetSetting("timelineFrameRate"), 0.0)
+    if end_frame is not None:
+        frames = int(end_frame)
+    frames -= int(start_frame or 0)
+    if frames <= 0 or not clip_fps or not tl_fps:
+        return None
+    return max(1, math.ceil(frames * tl_fps / clip_fps))
+
+
+def _free_track(tl, start: int, length: int) -> tuple[int, bool]:
+    """The lowest track index whose video AND audio track (Resolve places
+    both at the same index) are unlocked and empty over [start, start+length).
+    Returns (index, created): tracks are added when every existing one is
+    taken there.
+
+    Placing onto an occupied spot is not an error in Resolve's API: it
+    reports success and puts nothing on the timeline, so YEET said
+    "Inserted" while nothing appeared."""
+    end = start + length
+
+    def free(kind: str, index: int) -> bool:
+        if index > tl.GetTrackCount(kind):
+            return True                         # doesn't exist yet: we'll add it
+        try:
+            if tl.GetIsTrackLocked(kind, index):
+                return False
+        except Exception:  # noqa: BLE001 — older Resolve: assume unlocked
+            pass
+        return not any(x.GetStart() < end and x.GetEnd() > start
+                       for x in (tl.GetItemListInTrack(kind, index) or []))
+
+    top = max(tl.GetTrackCount("video"), tl.GetTrackCount("audio")) + 1
+    index = next(i for i in range(1, top + 1) if free("video", i) and free("audio", i))
+    created = False
+    while tl.GetTrackCount("video") < index:
+        if not tl.AddTrack("video"):
+            raise ResolveError("Couldn't add a video track for the clip.")
+        created = True
+    while tl.GetTrackCount("audio") < index:
+        if not tl.AddTrack("audio", "stereo"):
+            raise ResolveError("Couldn't add an audio track for the clip.")
+        created = True
+    return index, created
+
+
 def import_and_insert(path: str, insert_at: str = "playhead",
                       track_index: int | None = None,
                       start_frame: int = 0, end_frame: int | None = None,
@@ -263,20 +316,37 @@ def import_and_insert(path: str, insert_at: str = "playhead",
         clip_info["recordFrame"] = tl.GetStartFrame()
     # "end" -> omit recordFrame so Resolve appends.
 
+    # The lowest free track at that spot (V1/A1 when it's empty), adding a
+    # track pair if every one is taken there.
+    created = False
+    length = None
+    if track_index is None and "recordFrame" in clip_info:
+        length = _timeline_length(item, tl, start_frame, end_frame)
+        if length:
+            track_index, created = _free_track(tl, clip_info["recordFrame"], length)
     if track_index is not None:
         clip_info["trackIndex"] = track_index
 
     result = pool.AppendToTimeline([clip_info])
-    if not result:
+    placed_ok = bool(result)
+    if placed_ok and "recordFrame" in clip_info:
+        # Don't trust the return value: check the clip is really there.
+        target = track_index or 1
+        placed_ok = any(x.GetStart() == clip_info["recordFrame"]
+                        and (x.GetMediaPoolItem() and
+                             x.GetMediaPoolItem().GetMediaId() == item.GetMediaId())
+                        for x in (tl.GetItemListInTrack("video", target) or []))
+    if not placed_ok:
         raise ResolveError(
-            "Imported to the media pool, but placing it on the timeline failed. "
-            "The target spot may already be occupied — try moving the playhead, "
-            "or add an empty video track."
+            "Imported to the media pool, but Resolve didn't place it on the timeline. "
+            "Is the track locked, or the clip longer than the timeline allows?"
         )
 
     out = {
         "clipName": item.GetName(),
         "insertedFrame": clip_info.get("recordFrame"),
+        "trackIndex": track_index or 1,
+        "newTrack": created,
         "retimed": None,
     }
 

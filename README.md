@@ -200,7 +200,7 @@ Your Videos folder, in a `YEETingus` subfolder, one folder per video. Change it 
 - HDR survives only on the GPU path; the CPU path makes it SDR.
 - Macs use HEVC (VideoToolbox) for Premiere and the CPU path for Resolve. No AV1 encoder on Apple chips.
 - Linux and Intel Macs: untested.
-- No auto-update yet.
+- Updates are announced in the app, not installed by it: you download and run the new installer.
 - Mostly tested with YouTube, Twitch and X.
 
 ---
@@ -213,7 +213,7 @@ Fair use / fair dealing can cover commentary, criticism, review, teaching and th
 
 **You're responsible for what you download and publish. Credit your sources.**
 
-No telemetry, no analytics, no accounts. The app only talks to the internet to fetch yt-dlp, ffmpeg and Deno, and to the site of the link you pasted. Everything between the window, the service and the Premiere panel stays on your machine.
+No telemetry, no analytics, no accounts. The app only talks to the internet to fetch yt-dlp, ffmpeg and Deno, to the site of the link you pasted, and to GitHub to see whether a newer YEETingus is out (turn that off in Settings). Everything between the window, the service and the Premiere panel stays on your machine.
 
 DaVinci Resolve, Blackmagic Design, Adobe, Premiere Pro, YouTube, Twitch, macOS, Apple Silicon and Windows belong to their owners. YEETingus is an independent project, not affiliated with or endorsed by any of them. The opinions about their extensibility platforms are mine, and earned.
 

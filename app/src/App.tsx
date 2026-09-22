@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Clip, Meta } from "./api";
+import { openExternal, type Clip, type Meta } from "./api";
 import { Header } from "./components/Header";
 import { LogPanel } from "./components/LogPanel";
 import { Onboarding } from "./components/Onboarding";
@@ -7,7 +7,7 @@ import { History, PreviewCard, QueuePanel } from "./components/RightPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SourceCard, type SourceForm } from "./components/SourceCard";
 import { Button, Card, ProgressBar, Segmented, Select, StepRow, Switch } from "./components/ui";
-import { Download, List, ListPlus, Play, Square } from "./icons";
+import { Download, List, ListPlus, Play, Square, X } from "./icons";
 import { normalizeTimestamp, secondsToTimestamp, startSecondsFromUrl, toSeconds } from "./time";
 import { useEngine } from "./useEngine";
 
@@ -55,6 +55,17 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("queueMode", queueMode ? "1" : "0"); } catch { /* ignore */ }
   }, [queueMode]);
+
+  // ---- updates ---------------------------------------------------------- //
+  // The banner hides for a version once dismissed, and comes back for the next.
+  const update = state?.update;
+  const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(() => {
+    try { return localStorage.getItem("dismissedUpdate"); } catch { return null; }
+  });
+  const dismissUpdate = (version: string) => {
+    setDismissedUpdate(version);
+    try { localStorage.setItem("dismissedUpdate", version); } catch { /* ignore */ }
+  };
 
   // ---- form ------------------------------------------------------------- //
   const [form, setForm] = useState<SourceForm>({ url: "", inPoint: "00:00", outPoint: "00:30" });
@@ -305,6 +316,23 @@ export default function App() {
         />
 
         {engine.error && <div className="banner banner-error">{engine.error}</div>}
+        {update?.available && update.latest && dismissedUpdate !== update.latest && (
+          <div className="banner banner-update">
+            <span className="banner-text">
+              <b>YEETingus {update.latest}</b> is out. You have {update.current}.
+            </span>
+            <span className="log-spacer" />
+            <button type="button" className="link-btn"
+              onClick={() => openExternal(update.download ?? update.page ?? "")}>Download</button>
+            {update.page && (
+              <button type="button" className="link-btn" onClick={() => openExternal(update.page!)}>What's new</button>
+            )}
+            <button type="button" className="icon-btn icon-btn-sm" aria-label="Hide until the next version"
+              title="Hide until the next version" onClick={() => dismissUpdate(update.latest!)}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         <div className="left-body">
           <SourceCard
