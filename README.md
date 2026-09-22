@@ -8,7 +8,7 @@
 
 For DaVinci Resolve and Premiere Pro.
 
-![version](https://img.shields.io/badge/version-2.0.0-fcca74?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-2.1.0-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![premiere](https://img.shields.io/badge/Premiere%20Pro-25%2B-9999ff?style=flat-square&labelColor=1a1a1a)
@@ -34,11 +34,17 @@ YEETingus does that in one go. It downloads only the part you asked for, convert
 - Paste a link with `?t=` in it and the in point fills itself.
 - Age-restricted video? The preview tells you before you waste a download.
 
+**Queue**
+- Flip the **Queue** switch and the YEET button becomes **Add to queue**. Paste a link, add it, paste the next one.
+- Up to three download at the same time, each with its own progress bar, above your clips list. Stop or remove any of them.
+- Queued clips are download-only, so they don't land on your timeline in whatever order they happen to finish. YEET them from the history when you're ready, one at a time or in bulk.
+- A download that hiccups gets one automatic retry.
+
 **Editors**
 - Insert at the playhead or at the start of the timeline.
 - The status pill shows your project and timeline (or sequence), and what's missing if something is.
 - **Download only** works with no editor open at all.
-- Clips are delivered at your timeline's frame rate, so the editor never has to retime them.
+- **Frame rate** in Settings decides what happens when a clip's rate differs from the timeline's: **Sharp** or **Blend** converts it here, once, so the editor never retimes it; **Optical Flow** (Resolve) keeps the file and lets Resolve retime it smoothly; **Off** leaves it alone.
 
 **Quality**
 - Up to 4K. The app checks what the video actually offers and says so.
@@ -46,7 +52,8 @@ YEETingus does that in one go. It downloads only the part you asked for, convert
 
 **History**
 - Everything you've ever clipped, newest first, with thumbnail, title, channel, length, size, date.
-- Per clip: YEET it again, play it, copy the link, open its folder. Bulk delete with checkboxes.
+- Per clip: YEET it again, play it, copy the link, open its folder.
+- Bulk insert and bulk delete with checkboxes: tick several clips and YEET them into the timeline in order, or remove them from disk.
 - Click a title or channel to copy it.
 
 `FEATURES.md` has the long version.
@@ -168,10 +175,9 @@ Your Videos folder, in a `YEETingus` subfolder, one folder per video. Change it 
 - Resolve 18.1+ to play AV1 clips. Premiere gets HEVC because it can't play AV1 at all.
 - HDR survives only on the GPU path; the CPU path makes it SDR.
 - Macs use HEVC (VideoToolbox) for Premiere and the CPU path for Resolve. No AV1 encoder on Apple chips.
-- Drop-frame timelines (29.97/59.94): playhead placement can be off by a frame or two.
 - Linux and Intel Macs: untested.
 - No auto-update yet.
-- Mostly tested with YouTube and Twitch.
+- Mostly tested with YouTube, Twitch and X.
 
 ---
 

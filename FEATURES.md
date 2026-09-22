@@ -1,4 +1,4 @@
-# YEETingus 2.0 — what changed for the user
+# YEETingus 2.x — what changed for the user
 
 A running list of every user-facing change in the 2.0 rewrite, written while it
 was built. The 1.x app was a single Tkinter window; 2.0 is a new front end on a
@@ -72,6 +72,28 @@ unchanged.
   "Downloading… 42%", "Preparing… 80%", "Pasting into timeline…", "Done — …").
 - Both buttons are disabled until the tools are ready, and while a link is
   known to be age-restricted (see below).
+
+## Queue (2.1)
+
+- A **Queue** switch above the buttons. On, the two buttons cross-fade into a
+  single **Add to queue** (the box keeps its height, so nothing above moves),
+  with a line underneath saying what queued clips do. The switch remembers its
+  state between launches.
+- **Add to queue** validates the link and range like YEET does, clears the
+  link field, and the clip joins the list. The same clip twice is refused.
+- Up to **three downloads run side by side**, each on its own; the rest wait.
+  A running main job and history inserts are unaffected.
+- The **Queue panel** sits above the clips list while it has anything in it:
+  thumbnail, title (filled in once known), the section, the current step and a
+  progress bar per row. A row's button stops a running download or removes a
+  waiting or finished one; **Clear finished** tidies the list.
+- Queued clips are **download-only**: they go to the clips list, not the
+  timeline, so they aren't placed in whatever order they finish. YEET them
+  from the history, or tick several and use bulk insert.
+- A failed download is retried once automatically. Log lines from queued
+  downloads are prefixed `[Q1]`, `[Q2]`…, since several write at once.
+- Deleting clips and updating tools wait until the queue has finished
+  downloading.
 
 ## Preview (right panel, top)
 
