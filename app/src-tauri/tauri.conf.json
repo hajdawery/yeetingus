@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "YEETingus",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "identifier": "com.haej.yeetingus",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -19,11 +19,12 @@
         "minHeight": 520,
         "theme": "Dark",
         "backgroundColor": "#000000",
+        "visible": false,
         "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' https://*.ytimg.com https://*.googleusercontent.com data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -41,6 +42,7 @@
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
+        "installerHooks": "windows/hooks.nsh",
         "installMode": "currentUser"
       }
     },

@@ -58,11 +58,27 @@ export interface EngineState {
   resolve_menu: ResolveMenu;
   premiere: Premiere;
   progress: { fraction: number; step: string };
+  queue: QueueItem[];
   tools: Tools;
   settings: { download_dir: string; default_length: number; editor: Editor; onboarded: boolean; retime: Retime; conform: Conform };
   retimes: Retime[];
   quality_options: string[];
   insert_modes: string[];
+}
+
+/** One entry of the download queue (see engine.queue_add). */
+export interface QueueItem {
+  id: string;
+  number: number;
+  url: string;
+  start: string | null;
+  end: string | null;
+  title: string;
+  channel: string;
+  thumbnail: string | null;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  fraction: number;
+  step: string;
 }
 
 export interface Meta {
@@ -108,6 +124,7 @@ export type EngineEvent =
   | ({ kind: "settings"; seq: number; t: number } & EngineState["settings"])
   | { kind: "reveal_log"; seq: number; t: number }
   | { kind: "clips"; seq: number; t: number }
+  | { kind: "queue"; seq: number; t: number; items: QueueItem[] }
   | ({ kind: "state"; seq: number; t: number } & EngineState);
 
 export interface JobRequest {
@@ -163,6 +180,19 @@ export class Api {
   cancel() {
     return this.call<{ cancelled: boolean }>("POST", "/api/jobs/cancel", {});
   }
+  /** Queue a link; null when the engine refused (it logged why). */
+  queueAdd(req: { url: string; in: string; out: string; quality: string; title?: string; thumbnail?: string | null }) {
+    return this.call<{ item: QueueItem | null }>("POST", "/api/queue", req).then((r) => r.item).catch((e) => {
+      if (e instanceof ApiError && e.status === 409) return null;
+      throw e;
+    });
+  }
+  queueRemove(id: string) {
+    return this.call<{ removed: boolean }>("POST", "/api/queue/remove", { id });
+  }
+  queueClear() {
+    return this.call<{ ok: boolean }>("POST", "/api/queue/clear", {});
+  }
   meta(url: string) {
     return this.call<Meta>("POST", "/api/meta", { url });
   }
@@ -203,7 +233,10 @@ export class Api {
   }
   /** One clip or several, pasted in order as a single job. */
   insertClip(path: string | string[], insert_at: string) {
-    const body = Array.isArray(path) ? { paths: path, insert_at } : { path, insert_at };
+    // One clip goes as {path}, which every service version understands; only
+    // a real bulk insert needs {paths} (2.0.1+).
+    const list = Array.isArray(path) ? path : [path];
+    const body = list.length === 1 ? { path: list[0], insert_at } : { paths: list, insert_at };
     return this.call<{ started: boolean }>("POST", "/api/clips/insert", body).catch((e) => {
       if (e instanceof ApiError && e.status === 409) return { started: false };
       throw e;
@@ -235,7 +268,7 @@ export class Api {
     // EventSource can't set headers, hence the token in the query string.
     const url = `${this.base}/api/events?token=${encodeURIComponent(this.info.token)}&since=${since}`;
     const es = new EventSource(url);
-    const kinds = ["log", "progress", "resolve", "busy", "tools", "tool_busy", "reveal_log", "clips", "premiere", "resolve_menu", "settings", "state"];
+    const kinds = ["log", "progress", "resolve", "busy", "tools", "tool_busy", "reveal_log", "clips", "premiere", "resolve_menu", "settings", "state", "queue"];
     for (const kind of kinds) {
       es.addEventListener(kind, (e) => {
         onEvent(JSON.parse((e as MessageEvent).data) as EngineEvent);

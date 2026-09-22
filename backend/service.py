@@ -49,6 +49,9 @@ comes from a native origin (no Origin header, or file://) — the UXP panel can'
 know a per-launch token. A browser page always sends an http(s) Origin and is
 still refused. Same reasoning as Sherlock's bridge.
     GET  /api/clips                  {clips: [...]} every finished clip on disk
+    POST /api/queue                  {url, in, out, quality, title?, thumbnail?} -> {item}
+    POST /api/queue/remove           {id} -> {removed}   stops it if running
+    POST /api/queue/clear            drops finished/failed/stopped items
     POST /api/clips/insert           {path | paths, insert_at} -> {started}
     POST /api/clips/delete           {path} -> {deleted}
     POST /api/clips/open             {path} opens that clip's folder
@@ -64,6 +67,7 @@ state.quality_options; "max_height" an int or null overrides it.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import queue
@@ -120,6 +124,11 @@ def open_folder(path: str) -> None:
         subprocess.Popen(["xdg-open", path])
 
 
+# What the Premiere panel calls. UXP sends no Origin and can't be handed the
+# token, so these three (and only these) are let through without it.
+PANEL_ROUTES = frozenset({"/api/premiere/hello", "/api/premiere/poll", "/api/premiere/reply"})
+
+
 class Handler(BaseHTTPRequestHandler):
     server: "Service"
     protocol_version = "HTTP/1.1"
@@ -148,11 +157,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_body(self) -> None:
+        """Read the request body once, before auth and routing. A route that
+        never looked at its body used to leave it in the socket, where it
+        became the start of the next request on the same keep-alive
+        connection ("501 Unsupported method ('{}GET')")."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        self._body = self.rfile.read(length) if length > 0 else b""
+        if length < 0 or "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            self.close_connection = True
+
     def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0:
+        raw = getattr(self, "_body", b"")
+        if not raw:
             return {}
-        raw = self.rfile.read(length)
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -169,13 +190,13 @@ class Handler(BaseHTTPRequestHandler):
         token = self.server.token
         if not token:
             return True
-        if path.startswith("/api/premiere/") and path != "/api/premiere/install" \
-                and self._native_origin():
+        if path in PANEL_ROUTES and self._native_origin():
             return True
         header = self.headers.get("Authorization") or ""
-        if header.startswith("Bearer ") and header[7:].strip() == token:
+        if header.startswith("Bearer ") and hmac.compare_digest(header[7:].strip(), token):
             return True
-        return query.get("token", [None])[0] == token
+        given = query.get("token", [None])[0]
+        return given is not None and hmac.compare_digest(given, token)
 
     def do_OPTIONS(self) -> None:  # noqa: N802 — http.server's naming
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -193,6 +214,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = urlsplit(self.path)
         query = parse_qs(parts.query)
         try:
+            self._read_body()
             if not self._authorised(query, parts.path):
                 raise ApiError(401, "missing or wrong token")
             route = self.ROUTES.get((method, parts.path))
@@ -220,7 +242,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(self.engine.state())
 
     def r_log_since(self, q) -> None:
-        since = int(q.get("since", ["0"])[0] or 0)
+        try:
+            since = int(q.get("since", ["0"])[0] or 0)
+        except ValueError:
+            raise ApiError(400, "since must be an integer")
         self._send_json({"events": [e for e in list(self.engine.history)
                                     if e["seq"] > since]})
 
@@ -292,6 +317,27 @@ class Handler(BaseHTTPRequestHandler):
         # A refusal has already been logged (and streamed) by the engine; the
         # status code just says so without the client parsing the log.
         self._send_json({"started": started}, 200 if started else 409)
+
+    def r_queue_add(self, _q) -> None:
+        body = self._read_json()
+        label = body.get("quality", "Best available")
+        if label not in QUALITY_OPTIONS:
+            raise ApiError(400, f"unknown quality '{label}'")
+        thumb = body.get("thumbnail")
+        item = self.engine.queue_add(
+            str(body.get("url", "")),
+            str(body.get("in", "00:00")), str(body.get("out", "00:00")),
+            QUALITY_OPTIONS[label], str(body.get("title") or ""),
+            thumb if isinstance(thumb, str) else None)
+        self._send_json({"item": item}, 200 if item else 409)
+
+    def r_queue_remove(self, _q) -> None:
+        body = self._read_json()
+        self._send_json({"removed": self.engine.queue_remove(str(body.get("id", "")))})
+
+    def r_queue_clear(self, _q) -> None:
+        self.engine.queue_clear()
+        self._send_json({"ok": True})
 
     def r_cancel(self, _q) -> None:
         self._send_json({"cancelled": self.engine.cancel()})
@@ -374,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
         raw = body.get("paths")
         if not isinstance(raw, list):
             raw = [body.get("path", "")]
-        paths = [str(p).strip() for p in raw if str(p).strip()]
+        paths = [p.strip() for p in raw if isinstance(p, str) and p.strip()]
         if not paths:
             raise ApiError(400, "path is required")
         started = self.engine.start_insert(paths, str(body.get("insert_at", "playhead")))
@@ -408,6 +454,8 @@ class Handler(BaseHTTPRequestHandler):
         url = self.engine.clip_source_url(self._clip_path())
         if not url:
             raise ApiError(404, "no source link is known for that clip")
+        if urlsplit(url).scheme not in ("http", "https"):
+            raise ApiError(400, "the clip's source isn't a web link")
         import webbrowser
         if not webbrowser.open(url):
             raise ApiError(500, "couldn't open a browser")
@@ -466,6 +514,9 @@ class Handler(BaseHTTPRequestHandler):
         ("POST", "/api/log"): r_log,
         ("POST", "/api/open-folder"): r_open_folder,
         ("GET", "/api/clips"): r_clips,
+        ("POST", "/api/queue"): r_queue_add,
+        ("POST", "/api/queue/remove"): r_queue_remove,
+        ("POST", "/api/queue/clear"): r_queue_clear,
         ("POST", "/api/clips/insert"): r_clips_insert,
         ("POST", "/api/clips/delete"): r_clips_delete,
         ("POST", "/api/clips/open"): r_clips_open,
@@ -545,6 +596,45 @@ def remove_info() -> None:
         pass
 
 
+def watch_parent(pid: int, on_gone) -> None:
+    """Call `on_gone` once process `pid` exits. The app stops this service
+    on a normal close, but a force-kill (Task Manager, a crash) skips that
+    and used to leave the service running with nobody to talk to."""
+    def wait() -> None:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            k32.WaitForSingleObject.restype = wintypes.DWORD
+            k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            SYNCHRONIZE, ACCESS_DENIED, WAIT_FAILED = 0x00100000, 5, 0xFFFFFFFF
+            handle = k32.OpenProcess(SYNCHRONIZE, False, pid)
+            if not handle:
+                if ctypes.get_last_error() == ACCESS_DENIED:
+                    return          # alive but not ours to watch; don't quit
+                on_gone()           # already gone
+                return
+            result = k32.WaitForSingleObject(handle, 0xFFFFFFFF)
+            k32.CloseHandle(handle)
+            if result == WAIT_FAILED:
+                return              # can't tell; staying up beats quitting wrongly
+        else:
+            import time
+            while True:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    pass
+                time.sleep(2)
+        on_gone()
+    threading.Thread(target=wait, daemon=True, name="parent-watch").start()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=f"{APP_NAME} local service")
     ap.add_argument("--host", default="127.0.0.1")
@@ -558,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--app-exe", default=None,
                     help="the desktop app that owns this service; baked into "
                          "the Premiere panel so its Launch button can start it")
+    ap.add_argument("--parent-pid", type=int, default=None,
+                    help="exit when this process does (the app that started us)")
     args = ap.parse_args(argv)
 
     engine = Engine()
@@ -593,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
     # racing the info file.
     print(json.dumps({"port": port, "info": info}), flush=True)
 
+    if args.parent_pid:
+        watch_parent(args.parent_pid, server.stop_soon)
     if not args.no_boot:
         engine.start_boot()
     try:

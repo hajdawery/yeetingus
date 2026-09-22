@@ -30,6 +30,7 @@ a worker thread; the start_* wrappers do that. Only one job runs at a time.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -38,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime
 from fractions import Fraction
@@ -240,6 +242,23 @@ def validate_range(in_text: str, out_text: str) -> tuple[str | None, str | None]
 
 Listener = Callable[[dict], None]
 
+# How many queued downloads run side by side.
+QUEUE_WORKERS = 3
+
+
+class _JobCtx:
+    """Per-job state. The single job uses the engine's own; each queued
+    download runs on its own thread with its own, so they can run side by
+    side without cancelling or killing each other's tools."""
+
+    def __init__(self, qid: str | None = None, label: str = "") -> None:
+        self.cancel_event = threading.Event()
+        self.active_proc: subprocess.Popen | None = None
+        self.timeline_fps: Fraction | None = None
+        self.cpu_only = False      # this job fell back from a hardware encoder
+        self.qid = qid
+        self.label = label
+
 
 # --------------------------------------------------------------------------- #
 # Engine
@@ -250,7 +269,51 @@ class Engine:
     # Log lines kept for a front end that attaches after the fact.
     HISTORY = 500
 
+    # ---- per-job context (see _JobCtx) ------------------------------------ #
+
+    def _ctx(self) -> _JobCtx:
+        return getattr(self._tls, "ctx", None) or self._main_ctx
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        return self._ctx().cancel_event
+
+    @cancel_event.setter
+    def cancel_event(self, value: threading.Event) -> None:
+        self._ctx().cancel_event = value
+
+    @property
+    def active_proc(self) -> subprocess.Popen | None:
+        return self._ctx().active_proc
+
+    @active_proc.setter
+    def active_proc(self, value: subprocess.Popen | None) -> None:
+        self._ctx().active_proc = value
+
+    @property
+    def _timeline_fps(self) -> Fraction | None:
+        return self._ctx().timeline_fps
+
+    @_timeline_fps.setter
+    def _timeline_fps(self, value: Fraction | None) -> None:
+        self._ctx().timeline_fps = value
+
     def __init__(self) -> None:
+        self._tls = threading.local()
+        self._main_ctx = _JobCtx()
+        # The download queue: items as the front end sees them, in order.
+        self.queue: list[dict] = []
+        self._queue_lock = threading.Lock()
+        self._queue_ctx: dict[str, _JobCtx] = {}
+        self._queue_emit_lock = threading.Lock()
+        # Output names taken by a running job, so two jobs side by side never
+        # pick the same file (see _download).
+        self._reserved: set[str] = set()
+        self._reserve_lock = threading.RLock()
+        # Resolve's scripting API isn't meant to be driven from several
+        # threads at once; queued jobs ask it for the timeline rate while the
+        # main job may be inserting.
+        self._editor_lock = threading.RLock()
         self._listeners: list[Listener] = []
         self._listeners_lock = threading.Lock()
         self.history: deque[dict] = deque(maxlen=self.HISTORY)
@@ -336,14 +399,26 @@ class Engine:
                 pass
 
     def log(self, msg: str, tag: str | None = None) -> None:
-        """`tag` forces a log style; without it the style is guessed from the text."""
+        """`tag` forces a log style; without it the style is guessed from the text.
+        Lines from a queued download are marked with its label, since several
+        can be writing at once."""
+        label = self._ctx().label
+        if label:
+            msg = f"[{label}] {msg}"
         self.emit("log", text=f"[{datetime.now():%H:%M:%S}] {msg}", tag=tag)
 
     def _progress(self, fraction: float | None = None, step: str | None = None) -> None:
+        qid = self._ctx().qid
+        if qid:
+            self._queue_update(qid, fraction=fraction, step=step)
+            return
         self.emit("progress", fraction=fraction, step=step)
 
     def reveal_log(self) -> None:
-        """Ask the front end to bring the log into view (something went wrong)."""
+        """Ask the front end to bring the log into view (something went wrong).
+        Not for a queued download: its row says it failed."""
+        if self._ctx().qid:
+            return
         self.emit("reveal_log")
 
     def _set_status(self, text: str, level: str) -> None:
@@ -395,6 +470,7 @@ class Engine:
             "version": __version__,
             "booted": self.booted,
             "busy": self.busy,
+            "queue": self.queue_snapshot(),
             "editor": self.editor,
             "editors": list(config.EDITORS),
             "resolve": dict(self.resolve_state),
@@ -663,7 +739,8 @@ class Engine:
         if self.editor == "premiere":
             return self._check_premiere(quiet)
         try:
-            info = resolve_bridge.get_timeline_info()
+            with self._editor_lock:
+                info = resolve_bridge.get_timeline_info()
         except resolve_bridge.ResolveError as e:
             msg = str(e)
             # Distinguish "Resolve isn't there" from "Resolve is there but has
@@ -736,10 +813,11 @@ class Engine:
     def timeline_fps(self, quiet: bool = True) -> Fraction | None:
         """The chosen editor's current timeline rate, or None if unreachable."""
         try:
-            if self.editor == "premiere":
-                fps = self.premiere.status().get("fps") if self.premiere.connected else None
-            else:
-                fps = resolve_bridge.get_timeline_info().get("fps")
+            with self._editor_lock:
+                if self.editor == "premiere":
+                    fps = self.premiere.status().get("fps") if self.premiere.connected else None
+                else:
+                    fps = resolve_bridge.get_timeline_info().get("fps")
         except Exception:  # noqa: BLE001 — no timeline is simply "unknown"
             return None
         if not fps:
@@ -760,13 +838,15 @@ class Engine:
         """Paste a file into whichever editor is chosen. Same result shape."""
         if self.editor == "premiere":
             info = self._probe_media(path)
-            return self.premiere.insert(path, insert_at, has_video=bool(info and info.vcodec))
-        return resolve_bridge.import_and_insert(path, insert_at=insert_at, retime=self.retime)
+            with self._editor_lock:
+                return self.premiere.insert(path, insert_at, has_video=bool(info and info.vcodec))
+        with self._editor_lock:
+            return resolve_bridge.import_and_insert(path, insert_at=insert_at, retime=self.retime)
 
     # ---- yt-dlp update ----------------------------------------------------- #
 
     def start_update_ytdlp(self) -> bool:
-        if self.busy or not self.ytdlp_cmd:
+        if self.busy or self.queue_running() or not self.ytdlp_cmd:
             return False
         threading.Thread(target=self.update_ytdlp, daemon=True).start()
         return True
@@ -894,7 +974,7 @@ class Engine:
     # ---- ffmpeg install (macOS) -------------------------------------------- #
 
     def start_install_ffmpeg(self) -> bool:
-        if self.busy:
+        if self.busy or self.queue_running():
             return False
         threading.Thread(target=self.install_ffmpeg, daemon=True).start()
         return True
@@ -921,7 +1001,7 @@ class Engine:
     # ---- JavaScript runtime ------------------------------------------------ #
 
     def start_install_js(self) -> bool:
-        if self.busy:
+        if self.busy or self.queue_running():
             return False
         threading.Thread(target=self.install_js, daemon=True).start()
         return True
@@ -1043,7 +1123,7 @@ class Engine:
         self._kill_active()
         return True
 
-    def _kill_active(self) -> None:
+    def _kill_active(self, proc: subprocess.Popen | None = None) -> None:
         """Kill the running tool and everything it spawned.
 
         yt-dlp spawns ffmpeg, so the whole tree has to go — killing only the
@@ -1054,7 +1134,7 @@ class Engine:
         process group that spawn_kwargs established, giving it a SIGTERM to
         close its files before escalating to SIGKILL.
         """
-        proc = self.active_proc
+        proc = proc or self.active_proc
         if not proc or proc.poll() is not None:
             return
         try:
@@ -1105,8 +1185,14 @@ class Engine:
                 **spawn_kwargs(),
             )
             self.active_proc = proc
-            out, err = proc.communicate(timeout=120)
-            self.active_proc = None
+            try:
+                out, err = proc.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                self._kill_active(proc)
+                proc.communicate()
+                raise
+            finally:
+                self.active_proc = None
             if self._cancelled():
                 return dict(_EMPTY_META)
             proc = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
@@ -1177,6 +1263,8 @@ class Engine:
                 continue
             if not name.lower().endswith(MEDIA_EXTS):
                 continue
+            if _SIBLING_RE.search(name) or ".tmp." in name.lower():
+                continue        # a per-editor copy or a half-written file
             path = os.path.join(folder, name)
             try:
                 if os.path.isfile(path) and os.path.getsize(path) > 0:
@@ -1335,7 +1423,8 @@ class Engine:
             return None
         if self.caps is None:
             self._probe_hardware()
-        caps = self.caps or media.Capabilities()
+        caps = (media.Capabilities(av1_encoder=None, hevc_encoder=None)
+                if self._ctx().cpu_only else (self.caps or media.Capabilities()))
 
         target = self._conform_target()
         plan = media.plan(info, caps, section, editor=self.editor, target_fps=target,
@@ -1388,7 +1477,7 @@ class Engine:
                     # real footage (driver limits, odd dimensions). Retry on CPU
                     # rather than leave the user with nothing.
                     self.log("  Retrying with the CPU encoder…")
-                    self.caps = media.Capabilities(av1_encoder=None, hevc_encoder=None)
+                    self._ctx().cpu_only = True
                     try:
                         os.remove(tmp)
                     except OSError:
@@ -1481,37 +1570,49 @@ class Engine:
 
     def run_job(self, url, start, end, max_height, insert_at, insert=True) -> None:
         """The whole job, blocking. start_job is the normal way in."""
+        try:
+            self._job(url, start, end, max_height, insert_at, insert)
+        finally:
+            self.active_proc = None
+            self._set_busy(False)
+
+    def _job(self, url, start, end, max_height, insert_at, insert=True) -> str:
+        """Download, prepare and (optionally) insert one clip. Returns
+        "done", "failed" or "cancelled". Shared by the single job and the
+        queue; everything per-job lives in the current _JobCtx."""
         self._timeline_fps = None
+        self._ctx().cpu_only = False
         try:
             self._progress(P_INFO, "Reading video info…")
             meta = self.probe_metadata(url)
             if self._cancelled():
                 self._stopped()
-                return
+                return "cancelled"
 
             if meta.get("age_restricted"):
                 self._explain_403(got_bytes=False, age_gated=True)
                 self._progress(0.0, "Age restricted — can't download")
                 self.reveal_log()
-                return
+                return "failed"
 
+            self._queue_meta(meta)
             max_height = self._resolve_quality(max_height, meta)
 
             checked = self._check_range(start, end, meta)
             if checked is None:
                 self._progress(0.0, "Nothing to download — see log")
                 self.reveal_log()
-                return
+                return "failed"
             start, end = checked
 
             raw = self._download(url, start, end, max_height, meta)
             if self._cancelled():
                 self._stopped()
-                return
+                return "cancelled"
             if not raw:
                 self._progress(0.0, "Failed — see log")
                 self.reveal_log()
-                return
+                return "failed"
 
             # The preparation pass: the fast, seek-friendly transcode described
             # in media.py. A reused whole video has already been through it (it
@@ -1522,11 +1623,11 @@ class Engine:
             path = self._prepare(raw, section)
             if self._cancelled():
                 self._stopped()
-                return
+                return "cancelled"
             if path is None:
                 self._progress(0.0, "Failed — see log")
                 self.reveal_log()
-                return
+                return "failed"
 
             if insert:
                 # Past this point the file exists; the insert itself is quick and
@@ -1548,7 +1649,7 @@ class Engine:
             self.log(f"  Video:   {meta.get('title') or 'unknown'}")
             self.log(f"  Channel: {meta.get('channel') or 'unknown'}")
             self.log(f"  Quality: {info.describe() if info else 'unknown'}")
-            self._write_sidecar(path, url, meta, start, end,
+            self._write_sidecar(_SIBLING_RE.sub(".mp4", path), url, meta, start, end,
                                 info.describe() if info else None,
                                 info.duration if info else None)
             self.emit("clips")
@@ -1557,26 +1658,197 @@ class Engine:
             self._progress(1.0, f"Done — {res['clipName']}")
             if insert:
                 self.check_connection(quiet=True)
+            return "done"
         except resolve_bridge.ResolveError as e:
             self.log(f"RESOLVE: {e}")
             self._progress(0.0, "Resolve error — see log")
             self.reveal_log()
             self.check_connection(quiet=True)
+            return "failed"
         except premiere_bridge.PremiereError as e:
             self.log(f"PREMIERE: {e}")
             self._progress(0.0, "Premiere error — see log")
             self.reveal_log()
             self.check_connection(quiet=True)
+            return "failed"
         except Exception as e:  # noqa: BLE001
             if self._cancelled():
                 self._stopped()          # a kill surfaces as an exception too
-            else:
-                self.log(f"ERROR: {e}")
-                self._progress(0.0, "Failed — see log")
-                self.reveal_log()
+                return "cancelled"
+            self.log(f"ERROR: {e}")
+            self._progress(0.0, "Failed — see log")
+            self.reveal_log()
+            return "failed"
         finally:
             self.active_proc = None
-            self._set_busy(False)
+            self._release_reserved()
+
+    # ---- download queue -------------------------------------------------- #
+    #
+    # Queue mode: links go into a list instead of the single job slot and
+    # download side by side (QUEUE_WORKERS at a time), download-only — clips
+    # finishing in any order shouldn't land on the timeline in that order;
+    # they go to the clips list, to be inserted from there.
+
+    def queue_snapshot(self) -> list[dict]:
+        with self._queue_lock:
+            return [dict(i) for i in self.queue]
+
+    def _queue_changed(self) -> None:
+        # Snapshot and send under one lock, so a slower thread can't send an
+        # older snapshot after a newer one (the list would stick on it).
+        with self._queue_emit_lock:
+            self.emit("queue", items=self.queue_snapshot())
+
+    def _queue_update(self, qid: str, **fields) -> None:
+        with self._queue_lock:
+            for item in self.queue:
+                if item["id"] == qid:
+                    for k, v in fields.items():
+                        if v is not None:
+                            item[k] = v
+                    break
+            else:
+                return
+        self._queue_changed()
+
+    def _queue_meta(self, meta: dict) -> None:
+        """Fill a queued item's title and picture once the job has them."""
+        qid = self._ctx().qid
+        if qid:
+            self._queue_update(qid, title=meta.get("title") or None,
+                               channel=meta.get("channel") or None,
+                               thumbnail=meta.get("thumbnail") or None)
+
+    def queue_add(self, url: str, in_text: str, out_text: str,
+                  max_height: int | None, title: str = "",
+                  thumbnail: str | None = None) -> dict | None:
+        """Validate a link and put it in the queue. None (after logging why)
+        if it was refused."""
+        if not self.ytdlp_cmd:
+            self.log("ERROR: yt-dlp isn't available yet.")
+            return None
+        url = (url or "").strip()
+        if not url:
+            self.log("ERROR: no video link.")
+            return None
+        try:
+            start, end = validate_range(in_text, out_text)
+        except ValueError as e:
+            self.log(f"ERROR: {e}")
+            return None
+        with self._queue_lock:
+            for item in self.queue:
+                if (item["url"] == url and item["start"] == start and item["end"] == end
+                        and item["status"] in ("queued", "running")):
+                    self.log("That clip is already in the queue.")
+                    return None
+            number = 1 + max((i["number"] for i in self.queue), default=0)
+            item = {
+                "id": uuid.uuid4().hex[:10], "number": number, "url": url,
+                "start": start, "end": end, "max_height": max_height,
+                "title": title or "", "channel": "", "thumbnail": thumbnail,
+                "status": "queued", "fraction": 0.0, "step": "Queued",
+            }
+            self.queue.append(item)
+        self._queue_changed()
+        self._queue_pump()
+        return dict(item)
+
+    def _queue_pump(self) -> None:
+        """Start queued items while there are free workers."""
+        start: list[tuple[dict, _JobCtx]] = []
+        with self._queue_lock:
+            running = sum(1 for i in self.queue if i["status"] == "running")
+            for item in self.queue:
+                if running >= QUEUE_WORKERS:
+                    break
+                if item["status"] == "queued":
+                    item["status"] = "running"
+                    item["step"] = "Starting…"
+                    running += 1
+                    ctx = _JobCtx(item["id"], f"Q{item['number']}")
+                    self._queue_ctx[item["id"]] = ctx
+                    start.append((dict(item), ctx))
+        if start:
+            self._queue_changed()
+        for item, ctx in start:
+            threading.Thread(target=self._queue_run, args=(item, ctx),
+                             daemon=True, name=f"queue-{item['number']}").start()
+
+    def _queue_run(self, item: dict, ctx: _JobCtx) -> None:
+        self._tls.ctx = ctx
+        status = "failed"
+        try:
+            self.log(f"Queued download started: {item['url']}")
+            status = self._job(item["url"], item["start"], item["end"],
+                               item["max_height"], "playhead", insert=False)
+            if status == "failed" and not ctx.cancel_event.is_set():
+                # Several downloads at once trip the odd transient error
+                # (a 403, a dropped connection); one retry clears most.
+                self.log("Retrying once…")
+                self._queue_update(item["id"], step="Retrying…", fraction=0.0)
+                status = self._job(item["url"], item["start"], item["end"],
+                                   item["max_height"], "playhead", insert=False)
+        except Exception as e:  # noqa: BLE001 — _job catches its own; belt and braces
+            self.log(f"ERROR: {e}")
+        finally:
+            self._tls.ctx = None
+            with self._queue_lock:
+                self._queue_ctx.pop(item["id"], None)
+            step = {"done": "Done", "cancelled": "Cancelled"}.get(status, "Failed — see log")
+            self._queue_update(item["id"], status=status, step=step,
+                               fraction=1.0 if status == "done" else 0.0)
+            self._queue_pump()
+
+    def queue_remove(self, qid: str) -> bool:
+        """Stop a running item, or drop a waiting or finished one."""
+        with self._queue_lock:
+            item = next((i for i in self.queue if i["id"] == qid), None)
+            if item is None:
+                return False
+            ctx = self._queue_ctx.get(qid) if item["status"] == "running" else None
+            if ctx is None:
+                self.queue.remove(item)
+        if ctx is not None:
+            ctx.cancel_event.set()
+            self._queue_update(qid, step="Stopping…")
+            self._kill_active(ctx.active_proc)
+        else:
+            self._queue_changed()
+        return True
+
+    def queue_clear(self) -> None:
+        """Drop the finished, failed and stopped items."""
+        with self._queue_lock:
+            self.queue = [i for i in self.queue if i["status"] in ("queued", "running")]
+        self._queue_changed()
+
+    def queue_running(self) -> bool:
+        with self._queue_lock:
+            return any(i["status"] == "running" for i in self.queue)
+
+    # ---- output-name reservations ----------------------------------------- #
+
+    def _reserve(self, path: str) -> bool:
+        """Claim an output path for this job; False if another job has it."""
+        key = os.path.normcase(os.path.abspath(path))
+        with self._reserve_lock:
+            if key in self._reserved:
+                return False
+            self._reserved.add(key)
+        mine = getattr(self._tls, "reserved", None)
+        if mine is None:
+            mine = self._tls.reserved = []
+        mine.append(key)
+        return True
+
+    def _release_reserved(self) -> None:
+        mine = getattr(self._tls, "reserved", None) or []
+        with self._reserve_lock:
+            for key in mine:
+                self._reserved.discard(key)
+        self._tls.reserved = []
 
     # ---- clip library ------------------------------------------------------ #
     #
@@ -1728,6 +2000,8 @@ class Engine:
                 if seconds is None:
                     continue
                 side = self._read_sidecar(path)
+                if side.get("duration") is not None:
+                    continue    # a job wrote the full sidecar meanwhile
                 side["duration"] = seconds
                 try:
                     with open(os.path.splitext(path)[0] + self.SIDECAR_EXT, "w",
@@ -1768,8 +2042,8 @@ class Engine:
 
     def _insert_existing(self, paths: list[str], insert_at: str) -> None:
         total = len(paths)
+        self._ctx().cpu_only = False
         try:
-            self.cancel_event.clear()
             last = None
             for i, path in enumerate(paths):
                 if self.cancel_event.is_set():
@@ -1778,6 +2052,9 @@ class Engine:
                     return
                 which = f" ({i + 1}/{total})" if total > 1 else ""
                 usable = self._for_editor(path)
+                if usable is None and self._cancelled():
+                    self._stopped()
+                    return
                 if usable is None:
                     self._progress(0.0, "Failed — see log")
                     self.reveal_log()
@@ -1818,8 +2095,8 @@ class Engine:
     def delete_clip(self, path: str) -> bool:
         """Remove a clip and its sidecar; drop the folder too once it's empty.
         Refused while a job runs — it might be the file being written."""
-        if self.busy:
-            self.log("ERROR: can't delete while a job is running.")
+        if self.busy or self.queue_running():
+            self.log("ERROR: can't delete while a download is running.")
             return False
         if not self._inside_library(path) or not os.path.isfile(path):
             self.log("ERROR: that clip isn't in the clips folder any more.")
@@ -1945,6 +2222,10 @@ class Engine:
         if whole:
             # One fixed name per video, so a repeat request can reuse it.
             stem = naming.full_stem(video_id, channel)
+            if not self._reserve(os.path.join(job_dir, stem)):
+                self.log("ERROR: this whole video is already downloading "
+                         "(in the queue or the main job).")
+                return None
             existing = self._existing_download(job_dir, stem)
             if existing and not self._looks_complete(existing, meta):
                 # Left by an interrupted attempt. Removed rather than resumed:
@@ -1968,7 +2249,19 @@ class Engine:
         else:
             # "<id>-<ChannelName>-cNNN", numbered from what's already on disk so
             # nothing is ever overwritten.
-            stem = naming.next_clip_stem(job_dir, video_id, channel)
+            # With jobs side by side, two can scan the folder at once and pick
+            # the same number, so numbers are taken under a reservation.
+            def taken(candidate: str) -> bool:
+                base = os.path.join(job_dir, candidate)
+                return (os.path.normcase(os.path.abspath(base)) in self._reserved
+                        or bool(glob.glob(glob.escape(base) + "*")))
+
+            with self._reserve_lock:
+                stem = naming.next_clip_stem(job_dir, video_id, channel)
+                while taken(stem):
+                    m = re.search(r"(\d+)$", stem)
+                    stem = stem[:m.start()] + f"{int(m.group(1)) + 1:03d}"
+                self._reserve(os.path.join(job_dir, stem))
 
         self.log(f"Folder: {os.path.basename(job_dir)}")
         self.log(f"File:   {stem}.mp4")

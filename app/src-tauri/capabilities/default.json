@@ -9,6 +9,8 @@
     "core:default",
     "opener:default",
     "dialog:allow-open",
-    "deep-link:default"
+    "deep-link:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus"
   ]
 }

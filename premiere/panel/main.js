@@ -53,6 +53,9 @@ async function post(path, body) {
 }
 
 // One attempt to find a service: say hello on the next port in the list.
+// Keep in step with manifest.json and backend/version.py.
+const PANEL_VERSION = "2.1.0";
+
 async function dial() {
   const port = PORTS[Math.floor(portIndex / HOSTS.length)];
   const host = HOSTS[portIndex % HOSTS.length];
@@ -62,7 +65,7 @@ async function dial() {
   const res = await fetch(candidate + "/api/premiere/hello", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ host: "premiere", panel: "2.0.0",
+    body: JSON.stringify({ host: "premiere", panel: PANEL_VERSION,
       version: require("uxp").host.version }),
   });
   if (!res.ok) throw new Error("port " + port + " answered " + res.status);

@@ -150,6 +150,25 @@ export function Select({ options, value, onChange, icon, disabled }: {
   );
 }
 
+export function Switch({ checked, onChange, label, hint, disabled }: {
+  checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={`switch ${checked ? "is-on" : ""}`}
+      title={hint}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-track"><span className="switch-thumb" /></span>
+      <span className="switch-label">{label}</span>
+    </button>
+  );
+}
+
 export function ProgressBar({ fraction }: { fraction: number }) {
   const pct = Math.max(0, Math.min(1, fraction)) * 100;
   return (

@@ -321,7 +321,7 @@ img { display: block; }
 
 .preview {
   display: flex; align-items: center; gap: 14px;
-  margin: 14px 12px 0 18px; padding: 10px;
+  margin: 0 12px 0 18px; padding: 10px;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
 }
 .preview-thumb {
@@ -388,10 +388,18 @@ img { display: block; }
 }
 .clip-meta .copyable { display: inline; }
 .clip-len { color: var(--accent); opacity: .85; }
-.clip-actions { flex: none; display: flex; align-items: center; gap: 2px; opacity: .55; transition: opacity .12s; }
-.clip:hover .clip-actions, .clip.is-armed .clip-actions { opacity: 1; }
-.clip-yeet:not(:disabled) { color: var(--accent); }
+.clip-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+/* History icons: one colour, dim, each lighting up under the pointer. */
+.clip-actions .icon-btn, .history .panel-head .icon-btn, .queue .icon-btn {
+  color: var(--muted); opacity: .5; transition: opacity .12s, color .12s, background .12s, transform .12s;
+}
+.clip-actions .icon-btn:hover:not(:disabled),
+.history .panel-head .icon-btn:hover:not(:disabled),
+.queue .icon-btn:hover:not(:disabled) { opacity: 1; color: var(--text); }
+.clip-actions .icon-btn:disabled, .history .panel-head .icon-btn:disabled { opacity: .2; }
+.history .panel-head .icon-btn.is-active { opacity: 1; color: var(--accent); }
 .icon-btn.is-copied { color: var(--ok); }
+.clip-actions .icon-btn.is-copied { opacity: 1; }
 
 /* Selection mode: rows become checkboxes, a bar at the bottom acts on them. */
 .is-selecting .clip { cursor: pointer; }
@@ -501,7 +509,6 @@ img { display: block; }
   animation: pop .35s cubic-bezier(.2,.8,.3,1.4);
 }
 .ready.is-loading { color: var(--muted); background: var(--surface-2); border-color: var(--border); animation: none; }
-.preview.is-ready { border-color: rgba(34, 197, 94, .35); }
 
 /* On a light theme the yellow needs a darker hover, not a lighter one. */
 :root[data-theme="light"] .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
@@ -529,4 +536,79 @@ img { display: block; }
   }
   .clip-actions .icon-btn { width: 40px; height: 36px; background: var(--surface-2); }
   .clip-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+}
+
+/* ---- queue ---------------------------------------------------------------- */
+.switch {
+  display: inline-flex; align-items: center; gap: 9px; align-self: flex-start;
+  background: none; border: 0; padding: 2px 0; cursor: pointer; color: var(--text); font: inherit; font-size: 13px;
+}
+.switch:disabled { opacity: .5; cursor: default; }
+.switch-track {
+  position: relative; width: 32px; height: 18px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--border); transition: background .15s, border-color .15s;
+}
+.switch-thumb {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--muted); transition: transform .15s, background .15s;
+}
+.switch.is-on .switch-track { background: var(--accent-soft); border-color: var(--accent); }
+.switch.is-on .switch-thumb { transform: translateX(14px); background: var(--accent); }
+
+.queue { flex: none; display: flex; flex-direction: column; max-height: 40%; min-height: 0; }
+.queue-list { overflow: auto; padding: 0 12px 8px 18px; display: flex; flex-direction: column; gap: 4px; }
+.queue-item {
+  display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 7px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface);
+}
+.queue-thumb {
+  flex: none; width: 64px; height: 36px; border-radius: 6px; overflow: hidden;
+  background: var(--input); display: flex; align-items: center; justify-content: center; color: var(--muted);
+}
+.queue-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.queue-thumb .thumb-placeholder span { display: none; }
+.queue-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.queue-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-meta { display: flex; gap: 9px; color: var(--muted); font-size: 11.5px; min-width: 0; }
+.queue-step { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-item.is-done .queue-step { color: var(--ok, var(--accent)); }
+.queue-item.is-failed .queue-step { color: var(--danger); }
+.queue-item.is-done, .queue-item.is-cancelled { opacity: .7; }
+
+/* ---- preview slide-in (see Reveal in RightPanel.tsx) ---------------------- */
+.reveal {
+  flex: none; overflow: hidden; opacity: 0; transform: translateY(-6px);
+  transition: height .28s cubic-bezier(.2, .8, .2, 1), opacity .22s ease, transform .28s cubic-bezier(.2, .8, .2, 1);
+}
+.reveal.is-open { opacity: 1; transform: none; }
+.reveal-inner { padding-top: 14px; }
+
+/* ---- settings: two columns while there's room ----------------------------- */
+.dialog.dialog-settings { width: 940px; }
+/* Options size to their labels here, so "Optical Flow" fits a half-width column. */
+.dialog-settings .segment { flex: 1 1 auto; padding: 0 8px; }
+.dialog-backdrop.is-settings { padding: 12px; }
+.dialog-settings .dialog-head { padding: 12px 20px 10px; }
+.dialog-settings .dialog-foot { margin-top: 8px; padding: 10px 20px; }
+.dialog-settings .settings-cols, .dialog-settings .settings-col { gap: 8px; }
+.settings-cols { display: flex; gap: 12px; align-items: flex-start; }
+.settings-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+@media (max-width: 820px) {
+  .settings-cols { flex-direction: column; align-items: stretch; }
+}
+.dir-browse { flex: none; border-color: var(--border); background: var(--surface-2); }
+
+/* ---- YEET / queue buttons: one box, two cross-fading sets ------------------ */
+.foot-actions { position: relative; }
+.foot-panel {
+  display: flex; flex-direction: column; gap: 10px;
+  transition: opacity .24s ease, transform .3s cubic-bezier(.2, .8, .2, 1);
+}
+/* The normal set stays in the flow and sizes the box; the queue set lies on top. */
+.foot-queue { position: absolute; inset: 0; opacity: 0; transform: translateY(8px) scale(.98); pointer-events: none; }
+.foot-actions.is-queue .foot-queue { opacity: 1; transform: none; pointer-events: auto; }
+.foot-actions.is-queue .foot-normal { opacity: 0; transform: translateY(-8px) scale(.98); pointer-events: none; }
+.foot-note {
+  margin: 0; flex: 1; display: flex; align-items: center; justify-content: center; text-align: center;
+  color: var(--muted); font-size: 12px; line-height: 1.35; padding: 0 6px;
 }

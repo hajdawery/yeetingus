@@ -1,8 +1,8 @@
-import { useState, type ReactNode } from "react";
-import type { Clip, Meta } from "../api";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import type { Clip, Meta, QueueItem } from "../api";
 import { Alert, Check, CheckSquare, Download, Film, Folder, Link, Play, Refresh, Square, Trash, User, X } from "../icons";
 import { secondsToTimestamp, toSeconds } from "../time";
-import { IconButton } from "./ui";
+import { IconButton, ProgressBar } from "./ui";
 
 /** YouTube ids are 11 chars of [A-Za-z0-9_-]; for those the thumbnail is derivable. */
 function thumbFor(clip: Clip): string | null {
@@ -67,14 +67,129 @@ function fmtLength(seconds: number): string {
   return s < 120 ? `${s}s` : secondsToTimestamp(s).replace(/^0/, "");
 }
 
+/** The download queue, shown above the clips while it has anything in it. */
+export function QueuePanel({ items, onRemove, onClear }: {
+  items: QueueItem[]; onRemove: (id: string) => void; onClear: () => void;
+}) {
+  if (items.length === 0) return null;
+  const active = items.filter((i) => i.status === "queued" || i.status === "running").length;
+  const finished = items.length - active;
+  return (
+    <div className="queue">
+      <header className="panel-head">
+        <h2>Queue</h2>
+        <span className="panel-count">{active ? `${active} left` : "all done"}</span>
+        <span className="log-spacer" />
+        {finished > 0 && <button type="button" className="link-btn" onClick={onClear}>Clear finished</button>}
+      </header>
+      <div className="queue-list">
+        {items.map((item) => {
+          const range = item.start && item.end
+            ? `${item.start.replace(/^00:/, "")}–${item.end.replace(/^00:/, "")}`
+            : "Entire video";
+          const running = item.status === "running";
+          return (
+            <div key={item.id} className={`queue-item is-${item.status}`}>
+              <Thumb src={item.thumbnail} className="queue-thumb" iconSize={16} />
+              <div className="queue-text">
+                <div className="queue-title" title={item.url}>{item.title || item.url}</div>
+                <div className="queue-meta">
+                  <span>{range}</span>
+                  <span className="queue-step">{item.step}</span>
+                </div>
+                {running && <ProgressBar fraction={item.fraction} />}
+              </div>
+              <IconButton
+                label={running ? "Stop this download" : item.status === "queued" ? "Remove from the queue" : "Remove from the list"}
+                onClick={() => onRemove(item.id)}
+              >
+                {running ? <Square size={16} /> : <X size={16} />}
+              </IconButton>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Slides its content open and shut, and follows its content's height as it
+ * changes, so what sits below moves smoothly instead of jumping. The last
+ * content stays on screen while it closes.
+ */
+function Reveal({ show, children }: { show: boolean; children: ReactNode }) {
+  const inner = useRef<HTMLDivElement>(null);
+  const kept = useRef<ReactNode>(children);
+  if (show) kept.current = children;
+  const [mounted, setMounted] = useState(show);
+  const [height, setHeight] = useState(0);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (show) setMounted(true);
+  }, [show]);
+
+  // Track the content's natural height while shown.
+  useLayoutEffect(() => {
+    const el = inner.current;
+    if (!mounted || !el) return;
+    const measure = () => setHeight(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mounted]);
+
+  // Open on the frame after mounting, so the height animates from zero.
+  useEffect(() => {
+    if (!mounted) return;
+    if (!show) {
+      // Never got open (hidden within two frames): no transition will end.
+      if (!open || height === 0) setMounted(false);
+      else setOpen(false);
+      return;
+    }
+    // Two frames: the first gets the closed state painted, so the browser
+    // has a height to animate from.
+    let id = requestAnimationFrame(() => {
+      id = requestAnimationFrame(() => setOpen(true));
+    });
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, show]);
+
+  if (!mounted) return null;
+  return (
+    <div
+      className={`reveal ${open ? "is-open" : ""}`}
+      style={{ height: open ? height : 0 }}
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && e.propertyName === "height" && !show) setMounted(false);
+      }}
+    >
+      <div ref={inner} className="reveal-inner">{show ? children : kept.current}</div>
+    </div>
+  );
+}
+
 export function PreviewCard({ meta, loading, url, onClear }: {
   meta: Meta | null; loading: boolean; url: string; onClear: () => void;
 }) {
-  if (!url.trim()) return null;
+  return (
+    <Reveal show={Boolean(url.trim())}>
+      <PreviewBody meta={meta} loading={loading} onClear={onClear} />
+    </Reveal>
+  );
+}
+
+function PreviewBody({ meta, loading, onClear }: {
+  meta: Meta | null; loading: boolean; onClear: () => void;
+}) {
   const thumb = meta?.thumbnail;
   const ready = Boolean(meta && !meta.age_restricted && (meta.title || meta.heights.length));
   return (
-    <div className={`preview ${ready ? "is-ready" : ""}`}>
+    <div className="preview">
       <Thumb src={thumb} className="preview-thumb" iconSize={22}>
         {meta?.duration != null && <span className="thumb-duration">{secondsToTimestamp(meta.duration)}</span>}
       </Thumb>
@@ -97,10 +212,12 @@ export function PreviewCard({ meta, loading, url, onClear }: {
   );
 }
 
-export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onOpen, onDelete, onRefresh, onOpenRoot }: {
+export function History({ clips, loading, busy, queueActive = false, canInsert, onInsert, onPlay, onOpen, onDelete, onRefresh, onOpenRoot }: {
   clips: Clip[] | null;
   loading: boolean;
   busy: boolean;
+  /** Queued downloads are running (the engine refuses deletes then). */
+  queueActive?: boolean;
   canInsert: boolean;
   /** Inserts the given clips, in order, as one job. */
   onInsert: (clips: Clip[]) => void;
@@ -132,9 +249,11 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
     setSelected((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
   const leave = () => { setMode(null); setSelected(new Set()); setArmed(false); };
   const enter = (m: "insert" | "delete") => { if (mode === m) leave(); else { setMode(m); setSelected(new Set()); setArmed(false); } };
-  const chosen = () => all.filter((c) => selected.has(c.path));
+  const chosen = () => picked;
   const all = clips ?? [];
-  const allSelected = all.length > 0 && selected.size === all.length;
+  // Only clips still in the list count: one can vanish while it's ticked.
+  const picked = all.filter((c) => selected.has(c.path));
+  const allSelected = all.length > 0 && picked.length === all.length;
 
   return (
     <div className={`history ${selecting ? "is-selecting" : ""}`}>
@@ -178,6 +297,12 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
               key={clip.path}
               className={`clip ${isSelected ? "is-selected" : ""}`}
               onClick={selecting ? () => toggle(clip.path) : undefined}
+              {...(selecting ? {
+                role: "checkbox", "aria-checked": isSelected, tabIndex: 0,
+                onKeyDown: (e: KeyboardEvent) => {
+                  if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(clip.path); }
+                },
+              } : {})}
             >
               <Thumb src={thumb} className="clip-thumb" iconSize={18} />
               <div className="clip-text">
@@ -239,20 +364,20 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
           <button type="button" className="link-btn" onClick={() => setSelected(allSelected ? new Set() : new Set(all.map((c) => c.path)))}>
             {allSelected ? "Select none" : "Select all"}
           </button>
-          <span className="select-count">{selected.size} selected</span>
+          <span className="select-count">{picked.length} selected</span>
           <span className="log-spacer" />
           {mode === "insert" ? (
             <>
-              <button type="button" className="btn btn-primary btn-sm" disabled={selected.size === 0 || busy || !canInsert}
+              <button type="button" className="btn btn-primary btn-sm" disabled={picked.length === 0 || busy || !canInsert}
                 onClick={() => { onInsert(chosen()); leave(); }}>
-                <Download size={16} /> YEET {selected.size || ""}
+                <Download size={16} /> YEET {picked.length || ""}
               </button>
               <button type="button" className="btn btn-sm" onClick={leave}>Cancel</button>
             </>
           ) : armed ? (
             <>
-              <span className="select-count bad">Delete {selected.size} clip{selected.size === 1 ? "" : "s"} from disk?</span>
-              <button type="button" className="btn btn-danger btn-sm" disabled={busy}
+              <span className="select-count bad">Delete {picked.length} clip{picked.length === 1 ? "" : "s"} from disk?</span>
+              <button type="button" className="btn btn-danger btn-sm" disabled={busy || queueActive}
                 onClick={() => { onDelete(chosen()); leave(); }}>
                 Delete
               </button>
@@ -260,7 +385,8 @@ export function History({ clips, loading, busy, canInsert, onInsert, onPlay, onO
             </>
           ) : (
             <>
-              <button type="button" className="btn btn-danger btn-sm" disabled={selected.size === 0 || busy} onClick={() => setArmed(true)}>
+              <button type="button" className="btn btn-danger btn-sm" disabled={picked.length === 0 || busy || queueActive} onClick={() => setArmed(true)}
+                title={queueActive ? "Wait for the queue to finish downloading" : undefined}>
                 <Trash size={16} /> Delete
               </button>
               <button type="button" className="btn btn-sm" onClick={leave}>Cancel</button>

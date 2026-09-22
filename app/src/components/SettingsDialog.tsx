@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Api, Conform, Editor, EngineState, Retime } from "../api";
-import { X } from "../icons";
-import { Button, Card, Field, Segmented } from "./ui";
+import { Folder, X } from "../icons";
+import { Button, Card, Field, IconButton, Segmented } from "./ui";
 import { ResolveMenuSetup } from "./ResolveMenuSetup";
 
 const LENGTH_CHOICES = [15, 30, 60, 90];
@@ -36,13 +36,15 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
 }) {
   const [dir, setDir] = useState(state.settings.download_dir);
   const [editor, setEditor] = useState<Editor>(state.settings.editor);
-  const [frameRate, setFrameRate] = useState<FrameRate>(frameRateOf(state.settings.conform, state.settings.retime));
+  const [initialFrameRate] = useState<FrameRate>(() => frameRateOf(state.settings.conform, state.settings.retime));
+  const [frameRate, setFrameRate] = useState<FrameRate>(initialFrameRate);
   const [length, setLength] = useState(
     String(LENGTH_CHOICES.reduce((a, b) =>
       Math.abs(b - state.settings.default_length) < Math.abs(a - state.settings.default_length) ? b : a)),
   );
   const [resolveEnv, setResolveEnv] = useState<Record<string, unknown> | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const downOnBackdrop = useRef(false);
   const [canBrowse, setCanBrowse] = useState(false);
 
   useEffect(() => {
@@ -59,7 +61,10 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
   const save = async () => {
     setSaveError(null);
     try {
-      await api.saveSettings({ download_dir: dir.trim(), default_length: parseInt(length, 10), editor, ...FRAME_RATE[frameRate] });
+      await api.saveSettings({ download_dir: dir.trim(), default_length: parseInt(length, 10), editor,
+        // Only when changed here: the mapping would otherwise rewrite a
+        // retime set elsewhere (e.g. "blend") every time Settings is saved.
+        ...(frameRate !== initialFrameRate ? FRAME_RATE[frameRate] : {}) });
       onClose();
     } catch (e) {
       // Shown here too: the log is behind this dialog, so a silent failure
@@ -75,13 +80,21 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
   const libOk = Boolean(resolveEnv?.lib_exists);
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="dialog-backdrop is-settings"
+      // Close only on a click that also started on the backdrop: a text
+      // selection dragged out of a field used to close the dialog.
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (downOnBackdrop.current && e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="dialog dialog-settings" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <header className="dialog-head">
           <h2>Settings</h2>
           <button type="button" className="icon-btn icon-btn-sm" onClick={onClose} aria-label="Close"><X size={16} /></button>
         </header>
         <div className="dialog-body">
+          <div className="settings-cols">
+          <div className="settings-col">
           <Card>
             <h3 className="card-title">Editor</h3>
             <p className="card-subtitle">Where YEET pastes the clip.</p>
@@ -149,6 +162,31 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
             )}
           </Card>
 
+
+          <Card>
+            <h3 className="card-title">Default clip length</h3>
+            <p className="card-subtitle">End point set from the in point when the app opens.</p>
+            <Segmented
+              options={LENGTH_CHOICES.map((s) => ({ value: String(s), label: `${s}s` }))}
+              value={length}
+              onChange={setLength}
+            />
+          </Card>
+          <Card>
+            <h3 className="card-title">Clip storage</h3>
+            <p className="card-subtitle">Downloaded clips are saved here.</p>
+            <div className="row dir-row">
+              <Field value={dir} onChange={(e) => setDir(e.target.value)} spellCheck={false} />
+              {canBrowse && (
+                <IconButton label="Choose the folder in Explorer" className="dir-browse" onClick={browse}>
+                  <Folder size={18} />
+                </IconButton>
+              )}
+            </div>
+            <p className="hint">Existing clips are left where they are.</p>
+          </Card>
+          </div>
+          <div className="settings-col">
           <Card>
             <h3 className="card-title">Frame rate</h3>
             <p className="card-subtitle">What happens when a clip's frame rate differs from the timeline's.</p>
@@ -171,25 +209,6 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
             </p>
           </Card>
 
-          <Card>
-            <h3 className="card-title">Clip storage</h3>
-            <p className="card-subtitle">Downloaded clips are saved here.</p>
-            <div className="row dir-row">
-              <Field value={dir} onChange={(e) => setDir(e.target.value)} spellCheck={false} />
-              {canBrowse && <Button onClick={browse}>Browse…</Button>}
-            </div>
-            <p className="hint">Existing clips are left where they are.</p>
-          </Card>
-
-          <Card>
-            <h3 className="card-title">Default clip length</h3>
-            <p className="card-subtitle">End point set from the in point when the app opens.</p>
-            <Segmented
-              options={LENGTH_CHOICES.map((s) => ({ value: String(s), label: `${s}s` }))}
-              value={length}
-              onChange={setLength}
-            />
-          </Card>
 
           <Card>
             <h3 className="card-title">Tools</h3>
@@ -216,6 +235,8 @@ export function SettingsDialog({ api, state, toolBusy, onClose, onLog, version }
               )}
             </div>
           </Card>
+          </div>
+          </div>
         </div>
         <footer className="dialog-foot">
           <span className="credit">

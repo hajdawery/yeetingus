@@ -48,6 +48,7 @@ export function useEngine(): Engine {
 
   useEffect(() => {
     let close: (() => void) | null = null;
+    let retry = 0;
     let cancelled = false;
 
     (async () => {
@@ -90,6 +91,9 @@ export function useEngine(): Engine {
           case "resolve":
             setState((s) => s && { ...s, resolve: { text: ev.text, level: ev.level } });
             break;
+          case "queue":
+            setState((s) => s && { ...s, queue: ev.items });
+            break;
           case "busy":
             setState((s) => s && { ...s, busy: ev.busy, booted: s.booted || !ev.busy });
             break;
@@ -125,6 +129,7 @@ export function useEngine(): Engine {
       };
 
       const connect = () => {
+        if (cancelled) return;
         close?.();
         // Resume from the last seq we saw, so a hiccup doesn't duplicate lines.
         close = a.events(onEvent, () => {
@@ -132,7 +137,7 @@ export function useEngine(): Engine {
           setError("Lost the connection to the service; reconnecting…");
           // EventSource reconnects by itself, but with a fresh `since` we get
           // a clean state snapshot rather than a full replay.
-          setTimeout(connect, 1500);
+          retry = window.setTimeout(connect, 1500);
         }, lastSeq.current);
       };
       connect();
@@ -140,6 +145,7 @@ export function useEngine(): Engine {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(retry);
       close?.();
     };
   }, []);

@@ -138,8 +138,12 @@ def connect():
 
 
 def _timecode_to_frames(tc: str, fps: float) -> int | None:
-    """'HH:MM:SS:FF' -> frame index. Non-drop-frame math (fine for 24/25/30;
-    29.97/59.94 drop-frame may be off by a frame or two)."""
+    """'HH:MM:SS:FF' (or drop-frame 'HH:MM:SS;FF') -> frame index.
+
+    Drop-frame timecode skips frame numbers 0-1 (0-3 at 59.94) at the start
+    of every minute except each tenth; counting it as non-drop put playhead
+    inserts 108 frames late per hour of timecode at 29.97."""
+    drop = ";" in tc
     parts = tc.replace(";", ":").split(":")
     if len(parts) != 4:
         return None
@@ -147,8 +151,21 @@ def _timecode_to_frames(tc: str, fps: float) -> int | None:
         hh, mm, ss, ff = (int(p) for p in parts)
     except ValueError:
         return None
-    rounded = int(round(fps))
-    return (hh * 3600 + mm * 60 + ss) * rounded + ff
+    nominal = int(round(fps))
+    frames = (hh * 3600 + mm * 60 + ss) * nominal + ff
+    if drop and nominal in (30, 60):
+        dropped = nominal // 15                 # 2 at 29.97, 4 at 59.94
+        minutes = hh * 60 + mm
+        frames -= dropped * (minutes - minutes // 10)
+    return frames
+
+
+def _fps(value, default: float) -> float:
+    """Resolve's frame-rate setting as a number; it can read "29.97 DF"."""
+    try:
+        return float(str(value).split()[0]) if value else default
+    except (ValueError, IndexError):
+        return default
 
 
 def get_timeline_info() -> dict:
@@ -163,7 +180,7 @@ def get_timeline_info() -> dict:
     tl = project.GetCurrentTimeline()
     if not tl:
         raise ResolveError("No timeline is open. Create or open one first.")
-    fps = float(tl.GetSetting("timelineFrameRate") or 24)
+    fps = _fps(tl.GetSetting("timelineFrameRate"), 24.0)
     # Resolve *plays* at the project's playback rate, which can lag behind
     # the timeline's (a 24 default under a 60 fps timeline shows every 2.5th
     # frame and reads as "choppy"). Reported so the app can say so.
@@ -238,7 +255,7 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     if end_frame is not None:
         clip_info["endFrame"] = int(end_frame)
     if insert_at == "playhead":
-        fps = float(tl.GetSetting("timelineFrameRate") or 24)
+        fps = _fps(tl.GetSetting("timelineFrameRate"), 24.0)
         frame = _timecode_to_frames(tl.GetCurrentTimecode(), fps)
         if frame is not None:
             clip_info["recordFrame"] = frame
@@ -267,7 +284,7 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     # made. AppendToTimeline returns the placed items on recent Resolve
     # versions; older ones return True, so fall back to finding it by clip.
     try:
-        tl_fps = float(tl.GetSetting("timelineFrameRate") or 0)
+        tl_fps = _fps(tl.GetSetting("timelineFrameRate"), 0.0)
         clip_fps = float(item.GetClipProperty("FPS") or 0)
         mode = RETIME_PROCESSES.get(retime)
         if mode and tl_fps and clip_fps and abs(tl_fps - clip_fps) > 0.01:
@@ -278,8 +295,12 @@ def import_and_insert(path: str, insert_at: str = "playhead",
                     for x in tl.GetItemListInTrack("video", track) or []:
                         mpi = x.GetMediaPoolItem()
                         if mpi and mpi.GetMediaId() == item.GetMediaId() and \
-                                x.GetStart() == clip_info.get("recordFrame", x.GetStart()):
+                                ("recordFrame" not in clip_info
+                                 or x.GetStart() == clip_info["recordFrame"]):
                             placed.append(x)
+                if "recordFrame" not in clip_info and placed:
+                    # Appended: ours is the last one, not earlier copies.
+                    placed = [max(placed, key=lambda x: x.GetStart())]
             for x in placed:
                 if x.SetProperty("RetimeProcess", mode):
                     out["retimed"] = {"mode": retime, "clipFps": clip_fps, "timelineFps": tl_fps}

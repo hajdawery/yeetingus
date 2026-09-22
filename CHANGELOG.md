@@ -5,6 +5,56 @@ Notable changes to YEETingus. Format follows
 
 ---
 
+## [2.1.0] — 2026-09-22
+
+### Added
+- Queue mode: a switch above the YEET button turns it into "Add to queue".
+  Queued links download side by side (three at a time), download-only, and
+  show above the clips list with their own progress; stop or remove any one.
+  A queued download that fails is retried once.
+- The link preview slides in and out, and the clips list moves with it.
+- A folder button next to the clips folder in Settings opens Explorer's
+  folder picker.
+
+### Changed
+- Settings is wider and laid out in two columns, so it fits without scrolling.
+- The clips list's icons are one colour, dimmed until hovered.
+- The preview card no longer gets a green border when it's ready.
+- A link with a timestamp moves the end point too, keeping the clip's length.
+- No browser right-click menu in the app (text fields and selected text keep
+  theirs).
+- Thumbnails from any site show (X, TikTok, Instagram, Vimeo…), not only
+  YouTube's.
+
+### Fixed
+- YEET from the clips list did nothing when the installed service was older
+  than the app; single inserts now use the request every version accepts.
+- A service call that fails is reported in the log instead of leaving its
+  button looking dead (Stop, queue, installs, inserts, deletes).
+- The service could misread the next request on a connection after one
+  whose body it didn't read (after Stop, Clear, Refresh…), failing it.
+- Playhead inserts on 29.97/59.94 drop-frame timelines landed late (3.6 s per
+  hour of timecode at 29.97).
+- Two clips downloading at once could get the same file name, and a new clip
+  could overwrite an existing one when numbers had gaps.
+- A force-killed app, or a window closed while the service was still
+  starting, no longer leaves the service running; the installer and
+  uninstaller stop a stray one.
+- A copy converted for the other editor no longer gets its own info file,
+  and the reuse check never picks such a copy or a half-written file.
+- One hardware-encoder failure no longer switches every later job to the CPU.
+- A video-info lookup that times out no longer leaves yt-dlp running.
+- The preview could show the previous link's details, or stay on
+  "Checking…"; a failed lookup can now be retried.
+- Saving Settings no longer rewrites the Resolve retime you didn't touch.
+- Stop is reachable in queue mode; deleting clips while the queue downloads
+  says why it can't.
+- Settings no longer closes when a text selection is dragged out of it.
+- `?t=1m30` links read as 1:30, not 1:00.
+- The Resolve menu entry refuses a non-ASCII install path instead of
+  silently writing a broken one.
+- The Premiere panel reports its real version.
+
 ## [2.0.1] — 2026-09-17
 
 ### Added

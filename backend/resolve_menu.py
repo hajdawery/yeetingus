@@ -119,6 +119,12 @@ def install(app_exe: str | None, log) -> str:
     if leftover:
         raise ResolveMenuError(f"placeholders left unsubstituted: {sorted(set(leftover))}")
 
+    if not text.isascii():
+        # Written as ASCII (below), a path like C:\Users\Łukasz would turn
+        # into C:\Users\?ukasz and the menu entry would silently do nothing.
+        raise ResolveMenuError(
+            "the app's path has non-ASCII characters, which Resolve's Lua can't "
+            f"be given reliably: {app_exe}. Install YEETingus to a plain-ASCII folder.")
     dest = os.path.join(scripts, LUA_NAME)
     # ASCII + CRLF on Windows: what Resolve's Lua parser has always been given.
     newline = "\r\n" if pp.WINDOWS else "\n"

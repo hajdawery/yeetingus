@@ -7,7 +7,9 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::Manager;
@@ -26,26 +28,61 @@ struct ServiceState {
 
 /// The service starts on a background thread so the window can paint at
 /// once; `service_info` waits here until the handshake is in (or failed).
+/// The running service lives here too, so a window closed mid-start still
+/// gets it stopped (see `close` and the start thread in `run`).
 #[derive(Default)]
 struct ServiceSlot {
     result: Mutex<Option<Result<ServiceInfo, String>>>,
     ready: Condvar,
+    state: Mutex<Option<ServiceState>>,
+    closing: AtomicBool,
 }
+
+/// How long the page waits for the service before saying it didn't start.
+const START_TIMEOUT: Duration = Duration::from_secs(90);
 
 impl ServiceSlot {
     fn wait(&self) -> Result<ServiceInfo, String> {
-        let mut guard = self.result.lock().map_err(|e| e.to_string())?;
+        let mut guard = self.result.lock().unwrap_or_else(|e| e.into_inner());
         while guard.is_none() {
-            guard = self.ready.wait(guard).map_err(|e| e.to_string())?;
+            let (g, timeout) = self
+                .ready
+                .wait_timeout(guard, START_TIMEOUT)
+                .unwrap_or_else(|e| e.into_inner());
+            guard = g;
+            if timeout.timed_out() && guard.is_none() {
+                return Err("the service didn't start in time".into());
+            }
         }
         guard.as_ref().cloned().unwrap()
     }
 
     fn set(&self, value: Result<ServiceInfo, String>) {
-        if let Ok(mut guard) = self.result.lock() {
-            *guard = Some(value);
-        }
+        *self.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
         self.ready.notify_all();
+    }
+
+    /// Keep the started service, or stop it at once if the window already went.
+    fn adopt(&self, state: ServiceState) {
+        let mut slot = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closing.load(Ordering::SeqCst) {
+            drop(slot);
+            stop_service(&state);
+            return;
+        }
+        let info = state.info.clone();
+        *slot = Some(state);
+        drop(slot);
+        self.set(Ok(info));
+    }
+
+    /// The window is going: stop the service now, or as soon as it's up.
+    fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        let taken = self.state.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(state) = taken {
+            stop_service(&state);
+        }
     }
 }
 
@@ -117,6 +154,9 @@ fn start_service(app: &tauri::AppHandle) -> Result<ServiceState, String> {
     let token = make_token();
     let mut cmd = service_command(app)?;
     cmd.args(["--port", "0", "--token", &token]);
+    // So the service can exit on its own if this process is killed without
+    // getting to stop_service (Task Manager, a crash).
+    cmd.arg("--parent-pid").arg(std::process::id().to_string());
     if let Ok(exe) = std::env::current_exe() {
         cmd.arg("--app-exe").arg(exe);
     }
@@ -141,16 +181,27 @@ fn start_service(app: &tauri::AppHandle) -> Result<ServiceState, String> {
     let mut child = cmd.spawn().map_err(|e| format!("couldn't start the service: {e}"))?;
 
     // The service prints one JSON line with its port before anything else.
-    let stdout = child.stdout.take().ok_or("no stdout from service")?;
-    let mut first = String::new();
-    BufReader::new(stdout)
-        .read_line(&mut first)
-        .map_err(|e| e.to_string())?;
-    let parsed: serde_json::Value = serde_json::from_str(first.trim())
-        .map_err(|e| format!("bad service handshake '{}': {e}", first.trim()))?;
-    let port = parsed["port"]
-        .as_u64()
-        .ok_or("service handshake had no port")? as u16;
+    let handshake = |child: &mut Child| -> Result<u16, String> {
+        let stdout = child.stdout.take().ok_or("no stdout from service")?;
+        let mut first = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut first)
+            .map_err(|e| e.to_string())?;
+        let parsed: serde_json::Value = serde_json::from_str(first.trim())
+            .map_err(|e| format!("bad service handshake '{}': {e}", first.trim()))?;
+        Ok(parsed["port"]
+            .as_u64()
+            .ok_or("service handshake had no port")? as u16)
+    };
+    let port = match handshake(&mut child) {
+        Ok(port) => port,
+        Err(e) => {
+            // Don't leave a service running that nobody knows the port of.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
 
     Ok(ServiceState {
         info: ServiceInfo { port, token },
@@ -198,10 +249,25 @@ async fn service_info(slot: tauri::State<'_, Arc<ServiceSlot>>) -> Result<Servic
 #[tauri::command]
 fn show_path(path: String, reveal: bool) -> Result<(), String> {
     if reveal {
-        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
-    } else {
-        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+        return tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string());
     }
+    // Opening runs whatever the file is associated with, so only folders and
+    // media files: nothing the page asks for can launch a program.
+    let p = std::path::Path::new(&path);
+    let media = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "mp4" | "mov" | "mkv" | "webm" | "m4v" | "avi" | "mxf" | "m4a" | "mp3" | "wav"
+            )
+        })
+        .unwrap_or(false);
+    if !(p.is_dir() || (media && p.is_file())) {
+        return Err(format!("not a folder or media file: {path}"));
+    }
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -228,22 +294,32 @@ pub fn run() {
             // Starting the service (a frozen Python app) takes a few
             // seconds; doing it here on the main thread kept the window
             // blank until it answered. Spawn it and let the page wait.
+            // The window starts hidden and the page shows it once it has
+            // painted (main.tsx). Should the page never get that far, show it
+            // anyway rather than leave an invisible app running.
+            let shower = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(4));
+                if let Some(w) = shower.get_webview_window("main") {
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
+            });
             let slot = Arc::new(ServiceSlot::default());
             app.manage(Arc::clone(&slot));
             let handle = app.handle().clone();
             std::thread::spawn(move || match start_service(&handle) {
-                Ok(state) => {
-                    slot.set(Ok(state.info.clone()));
-                    handle.manage(state);
-                }
+                Ok(state) => slot.adopt(state),
                 Err(e) => slot.set(Err(e)),
             });
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                if let Some(state) = window.app_handle().try_state::<ServiceState>() {
-                    stop_service(&state);
+                if let Some(slot) = window.app_handle().try_state::<Arc<ServiceSlot>>() {
+                    slot.close();
                 }
             }
         })

@@ -195,13 +195,13 @@ def title_is_post_text(extractor: str, title: str = "", description: str = "",
     t, d, c = _norm(title), _norm(description), _norm(channel)
     if not t or not d:
         return False
-    if c and t.startswith(c):
+    # "<channel> - <text>": strip the channel only as a whole word.
+    if c and t.startswith(c) and (len(t) == len(c) or t[len(c)] in " -:|–—"):
         t = t[len(c):].lstrip(" -:|–—").strip()
         if not t:
             return False
     t = t.rstrip(".…")
-    d_head = d[:len(t)]
-    return len(t) >= 12 and (d.startswith(t) or t.startswith(d) or d_head == t)
+    return len(t) >= 12 and (d.startswith(t) or (len(d) >= 12 and t.startswith(d)))
 
 
 def folder_name(video_id: str, title: str = "", channel: str = "") -> str:
