@@ -5,31 +5,18 @@ Notable changes to YEETingus. Format follows
 
 ---
 
-## [Unreleased]
+## [2.1.0] — 2026-09-22
 
 ### Added
 - macOS build of the 2.x app: `build.py --release` on a Mac makes an
   ad-hoc-signed `YEETingus.app` and `dist/YEETingus-Mac-ARM.dmg`
   (`app/src-tauri/tauri.macos.conf.json`).
-
-### Fixed
-- The Resolve menu entry couldn't be installed on any platform in 2.1.0: the
-  non-ASCII path check looked at the whole launcher, and the launcher's own
-  comments had an em dash in them. Only the paths are checked now.
-- On macOS the Resolve menu entry did nothing: it ran the app's binary
-  through `sh`, which can't run it, and reported success anyway. It now opens
-  the `.app` through Launch Services, and a launch that fails says so.
-- "Choose the folder in Explorer" is just "Choose the folder".
-
-## [2.1.0] — 2026-09-22
-
-### Added
 - Queue mode: a switch above the YEET button turns it into "Add to queue".
   Queued links download side by side (three at a time), download-only, and
   show above the clips list with their own progress; stop or remove any one.
   A queued download that fails is retried once.
 - The link preview slides in and out, and the clips list moves with it.
-- A folder button next to the clips folder in Settings opens Explorer's
+- A folder button next to the clips folder in Settings opens the system
   folder picker.
 
 ### Changed
@@ -43,6 +30,12 @@ Notable changes to YEETingus. Format follows
   YouTube's.
 
 ### Fixed
+- The Resolve menu entry couldn't be installed at all: the non-ASCII path
+  check looked at the whole launcher, and the launcher's own comments had an
+  em dash in them. Only the paths are checked now.
+- On macOS the Resolve menu entry did nothing: it ran the app's binary
+  through `sh`, which can't run it, and reported success anyway. It now opens
+  the `.app` through Launch Services, and a launch that fails says so.
 - YEET from the clips list did nothing when the installed service was older
   than the app; single inserts now use the request every version accepts.
 - A service call that fails is reported in the log instead of leaving its
