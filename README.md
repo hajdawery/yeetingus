@@ -6,7 +6,9 @@
 
 **Paste a link, pick a range, press YEET. The clip lands on your timeline, ready to scrub.**
 
-For DaVinci Resolve and Premiere Pro.
+For DaVinci Resolve (Studio and Free) and Premiere Pro.
+
+**[yeetingus.com](https://yeetingus.com)** · [Download](https://github.com/hajdawery/yeetingus/releases/latest) · [Changelog](CHANGELOG.md)
 
 ![version](https://img.shields.io/badge/version-2.2.0-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
@@ -98,7 +100,7 @@ So the menu entry starts a small bridge script *inside* Resolve. YEETingus write
 
 ## 🟪 Premiere Pro
 
-It works. Video and audio land on V1/A1 at your playhead, same button. Getting there meant going through Adobe's extensibility platform, so, a few words.
+It works. Video and audio land at your playhead on the lowest free track pair (a new one if every track is taken there), in a project bin when you use **Bin**, same button. Getting there meant going through Adobe's extensibility platform, so, a few words.
 
 ### Setup
 
@@ -211,6 +213,8 @@ Your Videos folder, in a `YEETingus` subfolder, one folder per video. Fill in th
 
 **Premiere panel not open.** Window → UXP Plugins → YEETingus, then save the workspace so it stays. Settings shows whether the panel is installed and whether Premiere has it open.
 
+**Premiere ignores the Bin, or the panel acts old after an update.** The panel doesn't update with the app. Settings → Editor → Premiere Pro → **Reinstall the Premiere panel**, then reopen it in Premiere.
+
 **Premiere imported a clip as audio only.** That's an AV1 file Premiere remembers from before. Delete the item from the Project panel and insert again from the history; you'll get an HEVC copy.
 
 **Age-restricted.** No signed-in session, so no. The preview says so before you try.
@@ -257,6 +261,8 @@ MIT. See `THIRD-PARTY-NOTICES.md` before redistributing a build. The licence doe
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) for the downloading
 - [ffmpeg](https://ffmpeg.org/) for trimming, merging and conversion
+- [Deno](https://deno.com/), which yt-dlp needs to read YouTube
+- [Tauri](https://tauri.app/) for the window
 - [AutoSubs](https://github.com/tmoroney/auto-subs) for the look, and for proving the panel-as-phone-line idea
 - Blackmagic Design for a scripting API a program can actually call
 
