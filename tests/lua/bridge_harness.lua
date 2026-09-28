@@ -20,6 +20,18 @@
 ]]--
 
 local MODE = os.getenv("YEET_HARNESS_MODE") or "free"
+-- The item AddItemListToMediaPool returns appends nothing; the same clip
+-- fetched again from the bin works (what Taperat saw).
+local STALE_ITEM = os.getenv("YEET_HARNESS_STALE_ITEM") == "1"
+-- What Resolve reports as the clip's File Path, if not the path imported (a
+-- file imported by its 8.3 short path comes back under its long one). Read
+-- from a UTF-8 file: an environment variable would arrive in the ANSI code page.
+local REPORTED_PATH
+do
+  local f = os.getenv("YEET_HARNESS_REPORTED_FILE")
+  local fh = f and io.open(f, "rb")
+  if fh then REPORTED_PATH = fh:read("*a"); fh:close() end
+end
 local LAUNCHER = assert(os.getenv("YEET_HARNESS_LAUNCHER"), "YEET_HARNESS_LAUNCHER")
 local PREFS_FILE = assert(os.getenv("YEET_HARNESS_PREFS"), "YEET_HARNESS_PREFS")
 
@@ -129,7 +141,7 @@ function pool:AppendToTimeline(infos)
       if v ~= nil and v ~= math.floor(v) then return nil end   -- Resolve 21: whole frames
     end
     local t = info.trackIndex or 1
-    if not tracks.video[t] then return {} end
+    if not tracks.video[t] or info.mediaPoolItem.stale then return {} end
     local first = info.startFrame or 0
     local last = info.endFrame or CLIP_FRAMES
     local len = math.ceil((last - first) * FPS_TL / FPS_CLIP)
@@ -154,10 +166,17 @@ function storage:AddItemListToMediaPool(paths)
   function item:GetClipProperty(k)
     if k == "FPS" then return FPS_CLIP end
     if k == "Frames" then return tostring(CLIP_FRAMES) end
-    if k == "File Path" then return p end
+    if k == "File Path" then return REPORTED_PATH or p end
     return ""
   end
   current.clips[#current.clips + 1] = item
+  if STALE_ITEM then
+    local stale = { stale = true }
+    function stale:GetName() return item:GetName() end
+    function stale:GetMediaId() return "mid-stale" end
+    function stale:GetClipProperty(k) return item:GetClipProperty(k) end
+    return { stale }
+  end
   return { item }
 end
 

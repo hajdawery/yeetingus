@@ -224,10 +224,10 @@ class LuaEndToEndTests(_TempBridge):
             fh.write(text)
         return path
 
-    def _start(self, mode: str):
+    def _start(self, mode: str, **extra):
         mb.ensure_bridge()
         env = dict(os.environ, YEET_HARNESS_MODE=mode, YEET_HARNESS_LAUNCHER=self._render(),
-                   YEET_HARNESS_PREFS=self.prefs)
+                   YEET_HARNESS_PREFS=self.prefs, **extra)
         proc = subprocess.Popen([FUSCRIPT, "-l", "lua", HARNESS], env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, errors="replace")
@@ -279,6 +279,31 @@ class LuaEndToEndTests(_TempBridge):
         self.assertEqual(proc.returncode, 0, out)
         self.assertIn("HARNESS DONE", out)
         self.assertIn("owner=\n", out + "\n")          # Stop clears Owner
+
+    def test_retry_finds_the_clip_under_its_long_path(self):
+        # A Polish name goes to Resolve as its 8.3 short path, and Resolve
+        # reports the clip under the long one. When the returned item places
+        # nothing, the retry must still find the clip in the bin.
+        long_path = os.path.join(self.root, "Piątek clip.mp4")
+        short_path = os.path.join(self.root, "PIATEK~1.MP4")
+        for p in (long_path, short_path):
+            with open(p, "wb") as fh:
+                fh.write(b"x")
+        reported = os.path.join(self.root, "reported.txt")
+        with open(reported, "wb") as fh:
+            fh.write(long_path.encode("utf-8"))
+        proc = self._start("free", YEET_HARNESS_STALE_ITEM="1", YEET_HARNESS_REPORTED_FILE=reported)
+        self._wait_owner(proc)
+
+        with mock.patch.object(resolve_bridge, "connect",
+                               side_effect=resolve_bridge.ResolveError("no external scripting")), \
+                mock.patch.object(mb, "lua_path", return_value=short_path):
+            res = resolve_bridge.import_and_insert(long_path, insert_at="playhead", retime="project")
+        self.assertEqual((res["insertedFrame"], res["trackIndex"]), (86640, 2))
+
+        mb.stop()
+        out, _ = proc.communicate(timeout=15)
+        self.assertIn("HARNESS DONE", out)
 
     def test_studio_never_starts_the_bridge(self):
         proc = self._start("studio")

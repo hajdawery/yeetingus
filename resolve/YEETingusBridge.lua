@@ -212,17 +212,24 @@ local function pool_bin(pool, name)
   return pool:AddSubFolder(root, name)
 end
 
--- The clip for `path` in `folder`, fetched again. Taperat found that the item
+-- The imported clip in `folder`, fetched again. Taperat found that the item
 -- AddItemListToMediaPool returns can append nothing where this one works.
-local function refetch(folder, path)
+-- Matched by media id, else by path. A file with non-Latin letters is
+-- imported by its 8.3 short path and Resolve may report the long one, so
+-- every form in `paths` counts.
+local function refetch(folder, paths, want_id)
   if not folder then return nil end
-  local want = path:gsub("\\", "/"):lower()
+  local want = {}
+  for _, p in ipairs(paths) do
+    if type(p) == "string" and p ~= "" then want[p:gsub("\\", "/"):lower()] = true end
+  end
   local clips = list(folder:GetClipList())
   for i = #clips, 1, -1 do
-    local p = clips[i]:GetClipProperty("File Path")
-    if type(p) == "string" and p:gsub("\\", "/"):lower() == want then
-      return clips[i]
-    end
+    local c = clips[i]
+    local ok, id = pcall(function() return c:GetMediaId() end)
+    if want_id and ok and id == want_id then return c end
+    local p = c:GetClipProperty("File Path")
+    if type(p) == "string" and want[p:gsub("\\", "/"):lower()] then return c end
   end
   return nil
 end
@@ -255,7 +262,8 @@ function handlers.GetTimelineInfo()
   }
 end
 
--- Port of resolve_bridge.import_and_insert. args: path, insertAt, trackIndex,
+-- Port of resolve_bridge.import_and_insert. args: path (maybe an 8.3 short
+-- path), longPath (the same file as the app names it), insertAt, trackIndex,
 -- startFrame, endFrame, retime (Resolve's RetimeProcess number, 0 = leave),
 -- retimeName, bin.
 function handlers.ImportAndInsert(a)
@@ -326,7 +334,8 @@ function handlers.ImportAndInsert(a)
   local ok = placed_ok(result, item)
   if not ok and (type(result) ~= "table" or #result == 0) then
     -- Nothing was placed at all: try once more with the clip fetched again.
-    local again = refetch(target or folder, path)
+    local ok_id, item_id = pcall(function() return item:GetMediaId() end)
+    local again = refetch(target or folder, { path, a.longPath }, ok_id and item_id or nil)
     if again then
       item = again
       result = pool:AppendToTimeline({ info_for(item) })

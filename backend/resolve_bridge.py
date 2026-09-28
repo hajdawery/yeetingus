@@ -456,6 +456,9 @@ def _insert_via_bridge(path: str, insert_at: str, track_index: int | None,
     by YEETingusBridge.lua, with the same result shape."""
     res = _bridge("ImportAndInsert", {
         "path": resolve_mailbox.lua_path(path),
+        # For finding the clip again: Resolve may report the long form of a
+        # file imported by its short path.
+        "longPath": os.path.abspath(path),
         "insertAt": insert_at,
         "trackIndex": track_index,
         "startFrame": int(start_frame) if start_frame else None,
