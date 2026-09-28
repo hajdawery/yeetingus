@@ -53,7 +53,7 @@ async function post(base, path, body) {
 
 // One attempt to find a service: say hello on the next port in the list.
 // Keep in step with manifest.json and backend/version.py.
-const PANEL_VERSION = "2.1.1";
+const PANEL_VERSION = "2.2.0";
 
 async function dial() {
   const port = PORTS[Math.floor(portIndex / HOSTS.length)];

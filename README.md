@@ -8,7 +8,7 @@
 
 For DaVinci Resolve and Premiere Pro.
 
-![version](https://img.shields.io/badge/version-2.1.1-fcca74?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-2.2.0-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio%20%26%20Free-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![premiere](https://img.shields.io/badge/Premiere%20Pro-25%2B-9999ff?style=flat-square&labelColor=1a1a1a)
@@ -92,7 +92,7 @@ So the menu entry starts a small bridge script *inside* Resolve. YEETingus write
 - **Get past a dialog.** While a dialog is open in Resolve, the bridge waits. The insert times out after 90 seconds and tells you why.
 - **Stay fixed.** Blackmagic doesn't document the sandbox. A Resolve update can close this path. If it does, **Download only** and a drag still work.
 - **Handle every file name everywhere.** On Windows, names with non-Latin letters go to Resolve by their short 8.3 name. A drive without short names may refuse them.
-- **Prove itself yet.** Free support is new, and the tests run it against a stand-in Resolve. If it breaks on yours, open an issue with the log.
+- **Claim much mileage yet.** Free support is new: it has worked on Free 21.1 on Windows, and the tests cover the rest against a stand-in Resolve. If it breaks on yours, open an issue with the log.
 
 ---
 

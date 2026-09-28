@@ -8,7 +8,11 @@ handlers), `backend/resolve_mailbox.py` (the Python side), a fallback in
 `resolve_bridge.py`, and the launcher now starts the bridge on Free. The
 tests run the real launcher and bridge under Resolve's `fuscript` against a
 mock Resolve in a copy of the 21.1 sandbox (`tests/test_resolve_mailbox.py`).
-Not yet run on a real Free 21.1 install: the probes below still stand.
+**Confirmed on a real install, 2026-09-28:** Resolve Free 21.1 on Windows, on a
+second PC. After Workspace > Scripts > YEETingus, a YEET landed on the
+timeline correctly. The menu entry did not open the app; it had to be started
+by hand, as expected. In use since then it has worked fine, with no crash.
+Results per probe are in the table below. Shipped in 2.2.0.
 
 ## Answer
 
@@ -202,16 +206,16 @@ in Lua.
 Needs a Free 21.1 install on Windows. Free and Studio most likely share one
 install folder, so use a second machine or a VM.
 
-| # | Check | Pass |
-|---|---|---|
-| P1 | A `.lua` in `%APPDATA%\...\Fusion\Scripts\Utility` shows in `Workspace > Scripts` | listed |
-| P2 | Sandbox census, including `bmd.openfileexternal`. saadk408's `scripts/claude_diag.lua` (MIT) does this and writes the result into `Fusion.prefs` | the table above holds |
-| P3 | `loadfile` on the mailbox path, forward and back slashes | both load |
-| P4 | Import a file with an ASCII name, then one with Polish letters | both import |
-| P5 | `AppendToTimeline` at the playhead, on V1 and on a new track pair | clip at the right frame |
-| P6 | `SetProperty("RetimeProcess", 2)` on a 60 fps clip in a 24 fps timeline | returns true |
-| P7 | Round trip time; `Fusion.prefs` line endings and encoding | under 200 ms |
-| P8 | With the loop running: Fusion macro controls, Inspector drags, a colour drag for 30 s, quit Resolve | no glitch, no crash |
+| # | Check | Pass | 2026-09-28, Free 21.1, Windows |
+|---|---|---|---|
+| P1 | A `.lua` in `%APPDATA%\...\Fusion\Scripts\Utility` shows in `Workspace > Scripts` | listed | **passed** |
+| P2 | Sandbox census, including `bmd.openfileexternal`. saadk408's `scripts/claude_diag.lua` (MIT) does this and writes the result into `Fusion.prefs` | the table above holds | partly: enough of it holds for the bridge; the menu entry did not open the app |
+| P3 | `loadfile` on the mailbox path, forward and back slashes | both load | **passed** with forward slashes, which is what we bake |
+| P4 | Import a file with an ASCII name, then one with Polish letters | both import | no problem with Polish names in the user's work so far |
+| P5 | `AppendToTimeline` at the playhead, on V1 and on a new track pair | clip at the right frame | **passed** at the playhead; the new-track case is open |
+| P6 | `SetProperty("RetimeProcess", 2)` on a 60 fps clip in a 24 fps timeline | returns true | open |
+| P7 | Round trip time; `Fusion.prefs` line endings and encoding | under 200 ms | open |
+| P8 | With the loop running: Fusion macro controls, Inspector drags, a colour drag for 30 s, quit Resolve | no glitch, no crash | partly: no crash in use so far; the full sequence not run step by step |
 
 ## Fallback that needs no script at all
 

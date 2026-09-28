@@ -5,9 +5,16 @@ Notable changes to YEETingus. Format follows
 
 ---
 
-## [2.1.1] — 2026-09-28
+## [2.2.0] — 2026-09-28
 
 ### Added
+- Resolve Free: YEET puts clips on the timeline in the free version
+  too. Free has no external scripting, and 21.1 sandboxes its scripts,
+  so a small bridge runs inside Resolve instead: start YEETingus, then
+  click Workspace → Scripts → YEETingus once per Resolve session.
+  Same import, bin, playhead, free track and retime as on Studio. An
+  existing menu entry needs updating (Settings), then a Resolve
+  restart. The README says how it works and what it can't do.
 - Bins: a **Bin** field under the link puts downloads in a subfolder of the
   clips folder — type `Friday video` and every clip goes to
   `<clips folder>/Friday video/`, one folder per video inside it as usual.
@@ -41,6 +48,9 @@ Notable changes to YEETingus. Format follows
   already did this.
 
 ### Fixed
+- Resolve Free 21.1: the Scripts-menu entry did nothing. It stopped at
+  a Lua library the new sandbox removes. (Free still can't open the
+  app from there; start it yourself.)
 - Resolve: inserting onto an occupied spot reported "Inserted" while nothing
   was placed (Resolve's API returns success there). The placement is now
   checked, and a clip that didn't land is reported as an error.
