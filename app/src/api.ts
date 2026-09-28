@@ -60,8 +60,11 @@ export interface EngineState {
   progress: { fraction: number; step: string };
   queue: QueueItem[];
   update: UpdateInfo;
+  /** Which tool installs/updates are running (older services leave it out). */
+  tool_busy?: Record<string, boolean>;
   tools: Tools;
-  settings: { download_dir: string; default_length: number; editor: Editor; onboarded: boolean; retime: Retime; conform: Conform; check_updates: boolean };
+  /** `bin` is the last bin typed into the form ("" = none). */
+  settings: { download_dir: string; default_length: number; editor: Editor; onboarded: boolean; retime: Retime; conform: Conform; check_updates: boolean; bin: string; language?: "auto" | "en" | "pl" };
   retimes: Retime[];
   quality_options: string[];
   insert_modes: string[];
@@ -89,6 +92,8 @@ export interface QueueItem {
   title: string;
   channel: string;
   thumbnail: string | null;
+  /** The bin's folder name, "" for none. */
+  bin: string;
   status: "queued" | "running" | "done" | "failed" | "cancelled";
   fraction: number;
   step: string;
@@ -123,6 +128,8 @@ export interface Clip {
   duration: number | null;
   /** The video's page, when known. */
   source: string | null;
+  /** The bin folder it's in, "" when it's straight in the clips folder. */
+  bin: string;
 }
 
 export type EngineEvent =
@@ -148,6 +155,8 @@ export interface JobRequest {
   quality: string;
   insert_at: string;
   insert: boolean;
+  /** A subfolder of the clips folder to download into; "" for none. */
+  bin: string;
 }
 
 export class ApiError extends Error {
@@ -195,7 +204,7 @@ export class Api {
     return this.call<{ cancelled: boolean }>("POST", "/api/jobs/cancel", {});
   }
   /** Queue a link; null when the engine refused (it logged why). */
-  queueAdd(req: { url: string; in: string; out: string; quality: string; title?: string; thumbnail?: string | null }) {
+  queueAdd(req: { url: string; in: string; out: string; quality: string; title?: string; thumbnail?: string | null; bin?: string }) {
     return this.call<{ item: QueueItem | null }>("POST", "/api/queue", req).then((r) => r.item).catch((e) => {
       if (e instanceof ApiError && e.status === 409) return null;
       throw e;
@@ -235,7 +244,7 @@ export class Api {
   installPremierePanel() {
     return this.call<{ started: boolean }>("POST", "/api/premiere/install", {});
   }
-  saveSettings(s: { download_dir?: string; default_length?: number; editor?: Editor; onboarded?: boolean; retime?: Retime; conform?: Conform; check_updates?: boolean }) {
+  saveSettings(s: { download_dir?: string; default_length?: number; editor?: Editor; onboarded?: boolean; retime?: Retime; conform?: Conform; check_updates?: boolean; bin?: string; language?: "auto" | "en" | "pl" }) {
     return this.call<EngineState["settings"]>("POST", "/api/settings", s);
   }
   log(text: string, tag?: string) {

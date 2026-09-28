@@ -4,8 +4,9 @@
  * That is what lets the same components run inside a Premiere UXP panel
  * later, where the DOM and CSS are a subset of a browser's.
  */
-import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
-import { ChevronDown } from "../icons";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { ChevronDown, X } from "../icons";
+import { useI18n } from "../i18n";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <section className={`card ${className}`}>{children}</section>;
@@ -35,13 +36,24 @@ export function Label({ children }: { children: ReactNode }) {
   return <label className="field-label">{children}</label>;
 }
 
-export function Field({ icon, className = "", ...rest }: InputHTMLAttributes<HTMLInputElement> & {
+export function Field({ icon, onClear, className = "", ...rest }: InputHTMLAttributes<HTMLInputElement> & {
   icon?: ReactNode;
+  /** Adds an × at the end that empties the field (shown while it has text). */
+  onClear?: () => void;
 }) {
+  const { t } = useI18n();
+  const input = useRef<HTMLInputElement>(null);
+  const clearable = onClear && !rest.disabled && String(rest.value ?? "") !== "";
   return (
-    <div className={`field ${icon ? "has-icon" : ""} ${className}`}>
+    <div className={`field ${icon ? "has-icon" : ""} ${onClear ? "has-clear" : ""} ${className}`}>
       {icon && <span className="field-icon">{icon}</span>}
-      <input {...rest} />
+      <input ref={input} {...rest} />
+      {clearable && (
+        <button type="button" className="field-clear" title={t("Clear")} aria-label={t("Clear")}
+          onClick={() => { onClear(); input.current?.focus(); }}>
+          <X size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -108,12 +120,14 @@ export function Segmented<T extends string>({ options, value, onChange, disabled
  * page's colours (white list, invisible text on Windows), and UXP has no
  * <select> at all. Same Menu as the length picker.
  */
-export function Select({ options, value, onChange, icon, disabled }: {
+export function Select({ options, value, onChange, icon, disabled, label = (v) => v }: {
   options: string[];
   value: string;
   onChange: (v: string) => void;
   icon?: ReactNode;
   disabled?: boolean;
+  /** How an option reads; the value itself is what onChange gets. */
+  label?: (v: string) => string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -127,7 +141,7 @@ export function Select({ options, value, onChange, icon, disabled }: {
         aria-expanded={open}
       >
         {icon && <span className="field-icon">{icon}</span>}
-        <span className="select-value">{value}</span>
+        <span className="select-value">{label(value)}</span>
         <span className="select-chevron"><ChevronDown size={16} /></span>
       </button>
       <Menu open={open} onClose={() => setOpen(false)} up>
@@ -141,7 +155,7 @@ export function Select({ options, value, onChange, icon, disabled }: {
               className={`menu-item ${o === value ? "is-selected" : ""}`}
               onClick={() => { setOpen(false); onChange(o); }}
             >
-              {o}
+              {label(o)}
             </button>
           ))}
         </div>

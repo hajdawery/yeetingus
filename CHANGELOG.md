@@ -5,9 +5,30 @@ Notable changes to YEETingus. Format follows
 
 ---
 
-## [Unreleased]
+## [2.1.1] — 2026-09-28
 
 ### Added
+- Bins: a **Bin** field under the link puts downloads in a subfolder of the
+  clips folder — type `Friday video` and every clip goes to
+  `<clips folder>/Friday video/`, one folder per video inside it as usual.
+  Empty (the default) means no bin; **Today** beside it fills in today's
+  date as `YYYY-MM-DD`. The last bin is remembered between launches, and each
+  queued link keeps the bin it was added with.
+  - The clips list and queue show a clip's bin next to its other details.
+    Click a bin to show only its clips (the open-folder button then opens
+    that bin); click it again, or the bin next to the count, to show all.
+  - Inserting a clip from a bin puts it in the editor's bin of the same name
+    — a Media Pool bin in Resolve, a project bin in Premiere — made if it
+    doesn't exist yet. Resolve's open bin stays open. Premiere needs the
+    panel reinstalled (Settings) for this.
+  - Deleting the last clip of a bin removes the emptied folder.
+- Polish. Settings → Language: Auto (follows the system), English or
+  Polski, applied at once; the first-run window has the switch too. The
+  whole window is translated, including progress and status text; the log
+  stays in English (it's mostly yt-dlp's and ffmpeg's own output).
+- An × inside the link and Bin fields empties them in one click.
+- Looking up a link now shows it's working: a spinner in the "Checking…"
+  badge, a shimmering thumbnail slot and a bar sliding along the preview.
 - Update check: the app asks GitHub for the latest release at launch and
   every six hours, and when a newer one is out a banner offers its installer
   for your platform (dismiss it until the next version). Settings shows the
@@ -23,6 +44,50 @@ Notable changes to YEETingus. Format follows
 - Resolve: inserting onto an occupied spot reported "Inserted" while nothing
   was placed (Resolve's API returns success there). The placement is now
   checked, and a clip that didn't land is reported as an error.
+- STOP could leave the app stuck busy until a restart when it landed before
+  yt-dlp was registered, or while a link preview had taken its slot. STOP
+  now kills the tool it interrupts, and a second STOP tries again.
+- Removing a queued item that was between steps could kill the main
+  download instead.
+- After a STOP, every link preview came back blank until the next download.
+- Events could reach the window out of order and be dropped, leaving it
+  stuck busy or a queue row stuck mid-way.
+- The preview showed the previous link's card while the next one was looked
+  up, and kept "Checking…" after a failed lookup.
+- Resolve: a playhead insert on the Media or Fusion page (where Resolve
+  doesn't report the playhead) quietly went to the end of the timeline. It
+  now says to switch to the Edit or Cut page.
+- Resolve: the log could claim a Media Pool bin that Resolve hadn't made.
+- Converting a clip to the timeline's frame rate could also change its
+  quality setting (6 fps sources on the CPU encoder came out much worse).
+- Premiere on Intel Macs: every conversion failed once on VideoToolbox
+  before falling back to the CPU. It now gets a bitrate there.
+- ffmpeg could hang for good on a damaged input that logs every frame.
+- A clip whose insert failed was left without its info and off the clips
+  list; it's now filed before the insert.
+- A stopped or failed conversion left its raw download behind, holding the
+  clip number, and a whole video's could be reused at the wrong quality.
+- An end point past the end of a video could be rounded onto the in point.
+- A copy made for the other editor was conformed to a stale timeline rate,
+  and two jobs could make the same copy at once.
+- Closing the app now stops running downloads; yt-dlp and ffmpeg used to
+  keep going in the background.
+- A download of yt-dlp, ffmpeg or Deno that was cut short is no longer
+  installed (it was then used, broken, on every launch).
+- Resolve menu entry: installs for Windows users whose name has non-Latin
+  letters (via the short path), and names the path it can't use.
+- A link's tracking token (`t=7kLm…` on X) no longer reads as a timestamp.
+- Settings: a bad value no longer half-applies the others; the clips folder
+  must be a full path (`~` is expanded).
+- The service turns away requests that reach it under a non-loopback name.
+- Premiere panel: Reconnect could break the live connection and lose the
+  answer to an insert. A command whose poll dropped is handed out again.
+- A refused YEET, Download only or Add to queue now opens the log with the
+  reason; YEET and Download only are off until there's a link.
+- Settings' tool buttons are off (and say why) while the queue downloads.
+- The log keeps following new lines past 2000; the clips filter and ticks
+  survive opening the log; a link or bin entered while the app starts isn't
+  overwritten when the service answers.
 
 ## [2.1.0] — 2026-09-22
 

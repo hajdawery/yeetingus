@@ -1,11 +1,19 @@
 import { useState } from "react";
-import { ChevronDown, Clock, Copy, Link } from "../icons";
+import { Calendar, ChevronDown, Clock, Copy, Folder, Link } from "../icons";
 import { Button, Card, Field, Label, Step } from "./ui";
 import { secondsToTimestamp } from "../time";
+import { useI18n } from "../i18n";
 
 export const QUICK_LENGTHS: [string, number][] = [["15s", 15], ["30s", 30], ["60s", 60]];
 // The slider behind the dropdown: any length up to five minutes.
 export const SLIDER_MAX = 300;
+
+/** Today as YYYY-MM-DD, local time, so date-named bins sort by date. */
+function today(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 export interface SourceForm {
   url: string;
@@ -13,13 +21,16 @@ export interface SourceForm {
   outPoint: string;
 }
 
-export function SourceCard({ form, currentLength, flash, onUrl, onIn, onInCommit, onOut, onLength, onEntire, onCopyFromLink, disabled }: {
+export function SourceCard({ form, bin, currentLength, flash, onUrl, onBin, onIn, onInCommit, onOut, onLength, onEntire, onCopyFromLink, disabled }: {
   form: SourceForm;
+  /** A subfolder of the clips folder to download into; "" for none. */
+  bin: string;
   /** End minus in, in seconds, when both parse — what the slider starts at. */
   currentLength: number | null;
   /** Which of the two points the app just changed by itself. */
   flash: { in: boolean; out: boolean };
   onUrl: (v: string) => void;
+  onBin: (v: string) => void;
   onIn: (v: string) => void;
   onInCommit: () => void;
   onOut: (v: string) => void;
@@ -28,6 +39,7 @@ export function SourceCard({ form, currentLength, flash, onUrl, onIn, onInCommit
   onCopyFromLink: () => void;
   disabled: boolean;
 }) {
+  const { t } = useI18n();
   const [more, setMore] = useState(false);
   const [slider, setSlider] = useState(30);
   const openSlider = () => {
@@ -36,21 +48,41 @@ export function SourceCard({ form, currentLength, flash, onUrl, onIn, onInCommit
   };
   return (
     <Card>
-      <Step title="Source" />
+      <Step title={t("Source")} />
 
       <Field
         icon={<Link />}
-        placeholder="Paste a video link…"
+        placeholder={t("Paste a video link…")}
         value={form.url}
         onChange={(e) => onUrl(e.target.value)}
+        onClear={() => onUrl("")}
         disabled={disabled}
         spellCheck={false}
         autoComplete="off"
       />
 
+      <Label>{t("Bin")}</Label>
+      <div className="row dir-row">
+        <Field
+          icon={<Folder />}
+          placeholder={t("None — straight into the clips folder")}
+          value={bin}
+          onChange={(e) => onBin(e.target.value)}
+          onClear={() => onBin("")}
+          disabled={disabled}
+          spellCheck={false}
+          autoComplete="off"
+          maxLength={60}
+          title={t("A folder inside the clips folder for one project's clips, e.g. Friday video.\nLeave it empty for no bin. It stays filled in until you change it.")}
+        />
+        <Button onClick={() => onBin(today())} disabled={disabled} icon={<Calendar size={16} />} title={t("Use today's date as the bin")}>
+          {t("Today")}
+        </Button>
+      </div>
+
       <div className="row two">
         <div>
-          <Label>In point</Label>
+          <Label>{t("In point")}</Label>
           <Field
             className={flash.in ? "is-flash" : ""}
             icon={<Clock />}
@@ -59,40 +91,40 @@ export function SourceCard({ form, currentLength, flash, onUrl, onIn, onInCommit
             onBlur={onInCommit}
             onKeyDown={(e) => e.key === "Enter" && onInCommit()}
             disabled={disabled}
-            title={"Leave both points at 00:00 to download the entire video.\nOtherwise the end point follows automatically, using the default clip length from Settings."}
+            title={t("Leave both points at 00:00 to download the entire video.\nOtherwise the end point follows automatically, using the default clip length from Settings.")}
           />
         </div>
         <div>
-          <Label>End point</Label>
+          <Label>{t("End point")}</Label>
           <Field
             className={flash.out ? "is-flash" : ""}
             icon={<Clock />}
             value={form.outPoint}
             onChange={(e) => onOut(e.target.value)}
             disabled={disabled}
-            title="Leave both points at 00:00 to download the entire video."
+            title={t("Leave both points at 00:00 to download the entire video.")}
           />
         </div>
       </div>
 
-      <Label>Clip length from in point</Label>
+      <Label>{t("Clip length from in point")}</Label>
       <div className="row lengths">
         {QUICK_LENGTHS.map(([label, s]) => (
           <Button key={label} onClick={() => onLength(s)} disabled={disabled}>{label}</Button>
         ))}
-        <Button onClick={onEntire} disabled={disabled} title="Reset both points to 00:00 — downloads the whole video.">Whole</Button>
+        <Button onClick={onEntire} disabled={disabled} title={t("Reset both points to 00:00 — downloads the whole video.")}>{t("Whole")}</Button>
         <Button
           onClick={() => (more ? setMore(false) : openSlider())}
           disabled={disabled}
           className={`btn-square ${more ? "is-open" : ""}`}
-          aria-label="Pick a length"
+          aria-label={t("Pick a length")}
           aria-expanded={more}
-          title="Any length up to 5 minutes"
+          title={t("Any length up to 5 minutes")}
         >
           <ChevronDown />
         </Button>
-        <Button onClick={onCopyFromLink} disabled={disabled} icon={<Copy size={16} />} title="Use the link's ?t= timestamp as the in point">
-          From link
+        <Button onClick={onCopyFromLink} disabled={disabled} icon={<Copy size={16} />} title={t("Use the link's ?t= timestamp as the in point")}>
+          {t("From link")}
         </Button>
       </div>
       {more && (
@@ -100,7 +132,7 @@ export function SourceCard({ form, currentLength, flash, onUrl, onIn, onInCommit
         // column whichever side it opens on, and this also works in UXP.
         <div className="slider-inline">
           <div className="slider-head">
-            <span>Clip length</span>
+            <span>{t("Clip length")}</span>
             <strong>{secondsToTimestamp(slider)}</strong>
           </div>
           <input
@@ -117,7 +149,7 @@ export function SourceCard({ form, currentLength, flash, onUrl, onIn, onInCommit
           <div className="slider-scale"><span>0:01</span><span>2:30</span><span>5:00</span></div>
         </div>
       )}
-      <p className="hint">mm:ss, hh:mm:ss or seconds · both at 00:00 = entire video</p>
+      <p className="hint">{t("mm:ss, hh:mm:ss or seconds · both at 00:00 = entire video")}</p>
     </Card>
   );
 }

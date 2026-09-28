@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openExternal, type Clip, type Meta } from "./api";
 import { Header } from "./components/Header";
 import { LogPanel } from "./components/LogPanel";
@@ -10,6 +10,7 @@ import { Button, Card, ProgressBar, Segmented, Select, StepRow, Switch } from ".
 import { Download, List, ListPlus, Play, Square, X } from "./icons";
 import { normalizeTimestamp, secondsToTimestamp, startSecondsFromUrl, toSeconds } from "./time";
 import { useEngine } from "./useEngine";
+import { I18nProvider, makeI18n, resolveLang, Rich, type LangSetting } from "./i18n";
 
 type Theme = "dark" | "light";
 
@@ -56,6 +57,27 @@ export default function App() {
     try { localStorage.setItem("queueMode", queueMode ? "1" : "0"); } catch { /* ignore */ }
   }, [queueMode]);
 
+  // ---- language ---------------------------------------------------------- //
+  // Kept by the engine with the other settings; mirrored here so the first
+  // paint, before the engine answers, is already in the right language.
+  const [langSetting, setLangSetting] = useState<LangSetting>(() => {
+    try { return (localStorage.getItem("language") as LangSetting | null) ?? "auto"; } catch { return "auto"; }
+  });
+  const serverLang = state?.settings.language;
+  useEffect(() => {
+    if (serverLang === "auto" || serverLang === "en" || serverLang === "pl") setLangSetting(serverLang);
+  }, [serverLang]);
+  useEffect(() => {
+    try { localStorage.setItem("language", langSetting); } catch { /* ignore */ }
+  }, [langSetting]);
+  const changeLanguage = (value: LangSetting) => {
+    setLangSetting(value);
+    api?.saveSettings({ language: value }).catch(() => undefined);
+  };
+  const lang = resolveLang(langSetting);
+  const { t, tr } = useMemo(() => makeI18n(lang), [lang]);
+  useEffect(() => { document.documentElement.lang = lang; }, [lang]);
+
   // ---- updates ---------------------------------------------------------- //
   // The banner hides for a version once dismissed, and comes back for the next.
   const update = state?.update;
@@ -69,18 +91,39 @@ export default function App() {
 
   // ---- form ------------------------------------------------------------- //
   const [form, setForm] = useState<SourceForm>({ url: "", inPoint: "00:00", outPoint: "00:30" });
+  // The bin: a subfolder of the clips folder for one project's clips.
+  const [bin, setBin] = useState("");
   const [quality, setQuality] = useState("Best available");
   const [insertAt, setInsertAt] = useState("playhead");
   const defaultLength = state?.settings.default_length ?? 30;
 
   // The end point starts at the configured default once settings are known.
+  // So is the last bin, which the engine remembers.
   const seededRef = useRef(false);
+  const binSaved = useRef("");
   useEffect(() => {
     if (state && !seededRef.current) {
       seededRef.current = true;
-      setForm((f) => ({ ...f, outPoint: secondsToTimestamp(state.settings.default_length) }));
+      // Only into a form nobody has touched: the window is up before the
+      // service answers, and a link pasted in that time (with its ?t=
+      // range) or a bin typed then must survive the first snapshot.
+      setForm((f) => (f.url || f.inPoint !== "00:00" || f.outPoint !== "00:30"
+        ? f : { ...f, outPoint: secondsToTimestamp(state.settings.default_length) }));
+      binSaved.current = state.settings.bin ?? "";
+      setBin((b) => b || binSaved.current);
     }
   }, [state]);
+
+  // Saved a moment after typing stops, quietly, so it's there next launch.
+  useEffect(() => {
+    const value = bin.trim();
+    if (!api || !seededRef.current || value === binSaved.current) return;
+    const handle = setTimeout(() => {
+      binSaved.current = value;
+      api.saveSettings({ bin: value }).catch(() => undefined);
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [bin, api]);
 
   const log = useCallback((text: string, tag?: string) => {
     api?.log(text, tag).catch(() => undefined);
@@ -218,6 +261,7 @@ export default function App() {
     const handle = setTimeout(async () => {
       if (state.busy) return;         // the probe shares the job's process slot
       metaFor.current = url;
+      setMeta(null);                  // not the previous link's card meanwhile
       setMetaLoading(true);
       try {
         const m = await api.meta(url);
@@ -225,6 +269,7 @@ export default function App() {
       } catch {
         if (metaFor.current === url) {
           setMeta(null);
+          setMetaLoading(false);    // finally won't: metaFor is cleared next
           metaFor.current = "";     // so the same link can be looked up again
         }
       } finally {
@@ -240,8 +285,12 @@ export default function App() {
     setPop((n) => n + 1);
     api?.startJob({
       url: form.url, in: form.inPoint, out: form.outPoint,
-      quality, insert_at: insertAt, insert,
-    });
+      quality, insert_at: insertAt, insert, bin: bin.trim(),
+    }).then((r) => {
+      // Refused (a bad range, an unusable bin…): the reason is in the log,
+      // which is usually closed — a click that did nothing looked broken.
+      if (!r.started) setLogOpen(true);
+    }).catch((e) => log(`ERROR starting the job: ${String((e as Error).message ?? e)}`));
   };
 
   const addToQueue = async () => {
@@ -251,10 +300,12 @@ export default function App() {
     try {
       const item = await api.queueAdd({
         url: form.url, in: form.inPoint, out: form.outPoint, quality,
-        title: known?.title, thumbnail: known?.thumbnail,
+        title: known?.title, thumbnail: known?.thumbnail, bin: bin.trim(),
       });
-      // Clear the link so the next one can be pasted straight in.
+      // Clear the link so the next one can be pasted straight in; a refusal
+      // shows the log, which says why.
       if (item) onUrl("");
+      else setLogOpen(true);
     } catch (e) {
       log(`ERROR adding to the queue: ${String((e as Error).message ?? e)}`);
     }
@@ -274,7 +325,7 @@ export default function App() {
     } catch {
       /* the log already has the error, if the service is even there */
     } finally {
-      setClipsLoading(false);
+      if (id === clipsReq.current) setClipsLoading(false);
     }
   }, [api]);
   // On connect, whenever the engine says the folder changed, and when the
@@ -301,6 +352,7 @@ export default function App() {
   const progress = state?.progress ?? { fraction: 0, step: "" };
 
   return (
+    <I18nProvider lang={lang}>
     <div className="app">
       <div className="left">
         <Header
@@ -311,24 +363,24 @@ export default function App() {
           onLog={() => setLogOpen((o) => !o)}
           onSettings={() => setSettingsOpen(true)}
           theme={theme}
-          onTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          onTheme={() => setTheme((th) => (th === "dark" ? "light" : "dark"))}
           logOpen={logOpen}
         />
 
-        {engine.error && <div className="banner banner-error">{engine.error}</div>}
+        {engine.error && <div className="banner banner-error">{tr(engine.error)}</div>}
         {update?.available && update.latest && dismissedUpdate !== update.latest && (
           <div className="banner banner-update">
             <span className="banner-text">
-              <b>YEETingus {update.latest}</b> is out. You have {update.current}.
+              <Rich text={t("<b>YEETingus {version}</b> is out. You have {current}.", { version: update.latest, current: update.current })} />
             </span>
             <span className="log-spacer" />
             <button type="button" className="link-btn"
-              onClick={() => openExternal(update.download ?? update.page ?? "")}>Download</button>
+              onClick={() => openExternal(update.download ?? update.page ?? "")}>{t("Download")}</button>
             {update.page && (
-              <button type="button" className="link-btn" onClick={() => openExternal(update.page!)}>What's new</button>
+              <button type="button" className="link-btn" onClick={() => openExternal(update.page!)}>{t("What's new")}</button>
             )}
-            <button type="button" className="icon-btn icon-btn-sm" aria-label="Hide until the next version"
-              title="Hide until the next version" onClick={() => dismissUpdate(update.latest!)}>
+            <button type="button" className="icon-btn icon-btn-sm" aria-label={t("Hide until the next version")}
+              title={t("Hide until the next version")} onClick={() => dismissUpdate(update.latest!)}>
               <X size={14} />
             </button>
           </div>
@@ -337,6 +389,8 @@ export default function App() {
         <div className="left-body">
           <SourceCard
             form={form}
+            bin={bin}
+            onBin={setBin}
             currentLength={currentLength}
             flash={flash}
             onUrl={onUrl}
@@ -350,19 +404,20 @@ export default function App() {
           />
 
           <Card className="card-rows">
-            <StepRow title="Quality">
+            <StepRow title={t("Quality")}>
               <Select
                 options={state?.quality_options ?? ["Best available"]}
                 value={quality}
                 onChange={setQuality}
+                label={(v) => (v === "Best available" ? t("Best available") : v)}
                 disabled={busy}
               />
             </StepRow>
-            <StepRow title="Insert at">
+            <StepRow title={t("Insert at")}>
               <Segmented
                 options={[
-                  { value: "playhead", label: "Playhead", icon: <Play size={16} /> },
-                  { value: "start", label: "Start", icon: <List size={16} /> },
+                  { value: "playhead", label: t("Playhead"), icon: <Play size={16} /> },
+                  { value: "start", label: t("Start"), icon: <List size={16} /> },
                 ]}
                 value={insertAt}
                 onChange={setInsertAt}
@@ -374,51 +429,55 @@ export default function App() {
 
         <div className="left-foot">
           <div className="progress-block">
-            <span className="progress-step">{progress.step || (ready ? "Idle" : "Getting tools ready…")}</span>
+            <span className="progress-step">{progress.step ? tr(progress.step) : ready ? t("Idle") : t("Getting tools ready…")}</span>
             <ProgressBar fraction={progress.fraction} />
           </div>
           <Switch
             checked={queueMode}
             onChange={setQueueMode}
-            label="Queue"
-            hint="Queue links and download several at once. Queued clips are downloaded only; YEET them from the clips list."
+            label={t("Queue")}
+            hint={t("Queue links and download several at once. Queued clips are downloaded only; YEET them from the clips list.")}
           />
           {/* Both button sets are always rendered in one fixed-height box and
               cross-fade, so flipping Queue doesn't shift anything above it. */}
           <div className={`foot-actions ${queueMode ? "is-queue" : ""}`}>
             <div className="foot-panel foot-normal" inert={queueMode}>
               {busy ? (
-                <Button variant="danger" block icon={<Square />} onClick={() => api?.cancel()} className="btn-big is-busy">Stop</Button>
+                <Button variant="danger" block icon={<Square />} onClick={() => api?.cancel()} className="btn-big is-busy">{t("Stop")}</Button>
               ) : (
-                <Button key={pop} variant="primary" block icon={<Download />} onClick={() => startJob(true)} disabled={!ready || blocked || !resolveOk} className={`btn-big ${pop && !queueMode ? "is-popped" : ""}`}
-                  title={resolveOk ? undefined : `Connect ${state?.editor === "premiere" ? "Premiere (open the YEETingus panel)" : "Resolve (open a project and timeline)"} first — or use Download only`}>
-                  YEET into timeline
+                <Button key={pop} variant="primary" block icon={<Download />} onClick={() => startJob(true)} disabled={!ready || blocked || !resolveOk || !form.url.trim()} className={`btn-big ${pop && !queueMode ? "is-popped" : ""}`}
+                  title={resolveOk ? undefined : state?.editor === "premiere"
+                    ? t("Connect Premiere (open the YEETingus panel) first — or use Download only")
+                    : t("Connect Resolve (open a project and timeline) first — or use Download only")}>
+                  {t("YEET into timeline")}
                 </Button>
               )}
-              <Button block icon={<Download />} onClick={() => startJob(false)} disabled={!ready || busy || blocked}>
-                Download only
+              <Button block icon={<Download />} onClick={() => startJob(false)} disabled={!ready || busy || blocked || !form.url.trim()}>
+                {t("Download only")}
               </Button>
             </div>
             <div className="foot-panel foot-queue" inert={!queueMode}>
               {busy ? (
-                <Button variant="danger" block icon={<Square />} onClick={() => api?.cancel()} className="btn-big is-busy">Stop</Button>
+                <Button variant="danger" block icon={<Square />} onClick={() => api?.cancel()} className="btn-big is-busy">{t("Stop")}</Button>
               ) : (
                 <Button key={pop} variant="primary" block icon={<ListPlus />} onClick={addToQueue}
                   disabled={!ready || blocked || !form.url.trim()} className={`btn-big ${pop && queueMode ? "is-popped" : ""}`}>
-                  Add to queue
+                  {t("Add to queue")}
                 </Button>
               )}
-              <p className="foot-note">Queued clips download side by side, without inserting. YEET them from the clips list when they're done.</p>
+              <p className="foot-note">{t("Queued clips download side by side, without inserting. YEET them from the clips list when they're done.")}</p>
             </div>
           </div>
         </div>
       </div>
 
       <div className="right">
-        {logOpen ? (
+        {logOpen && (
           <LogPanel lines={engine.log} onClear={engine.clearLog} onClose={() => setLogOpen(false)} />
-        ) : (
-          <>
+        )}
+        {/* Hidden, not unmounted, while the log is open: the clips list keeps
+            its bin filter and ticked clips for when it comes back. */}
+        <div className="right-main" hidden={logOpen}>
             <PreviewCard meta={form.url.trim() === metaFor.current ? meta : null} loading={metaLoading} url={form.url} onClear={() => onUrl("")} />
             <QueuePanel
               items={state?.queue ?? []}
@@ -432,7 +491,12 @@ export default function App() {
               queueActive={(state?.queue ?? []).some((i) => i.status === "running")}
               canInsert={ready && resolveOk}
               onInsert={(list) => api?.insertClip(list.map((c) => c.path), insertAt)
-                .then((r) => { if (!r.started) log("ERROR: couldn't start the insert — a job is already running, or the clip isn't in the clips folder."); })
+                .then((r) => {
+                  if (!r.started) {
+                    log("ERROR: couldn't start the insert — a job is already running, or the clip isn't in the clips folder.");
+                    setLogOpen(true);
+                  }
+                })
                 .catch((e) => log(`ERROR inserting: ${String((e as Error).message ?? e)}`))}
               onPlay={(c) => api?.playClip(c.path)}
               onOpen={(c) => api?.openClipFolder(c.path)}
@@ -447,10 +511,9 @@ export default function App() {
                 if (refused) log(`ERROR: ${refused} clip${refused === 1 ? "" : "s"} couldn't be deleted — see the lines above.`);
               }}
               onRefresh={loadClips}
-              onOpenRoot={() => api?.openFolder(state?.settings.download_dir)}
+              onOpenRoot={(dir) => api?.openFolder(dir ?? state?.settings.download_dir)}
             />
-          </>
-        )}
+        </div>
       </div>
 
       {showOnboarding && api && state && (
@@ -460,6 +523,8 @@ export default function App() {
           toolBusy={engine.toolBusy}
           onDone={() => setOnboardingDone(true)}
           onLog={log}
+          language={lang}
+          onLanguage={changeLanguage}
         />
       )}
 
@@ -471,8 +536,11 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onLog={log}
           version={state.version}
+          language={langSetting}
+          onLanguage={changeLanguage}
         />
       )}
     </div>
+    </I18nProvider>
   );
 }

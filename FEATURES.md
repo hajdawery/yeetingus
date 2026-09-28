@@ -5,6 +5,18 @@ was built. The 1.x app was a single Tkinter window; 2.0 is a new front end on a
 new architecture, with the download / conversion / Resolve logic carried over
 unchanged.
 
+## Language
+
+- **English and Polish.** Settings → Language: **Auto** (the system's
+  language: Polish on a Polish system, English otherwise), **English** or
+  **Polski**. Applied at once and saved with the other settings; the
+  first-run window has an English / Polski switch too.
+- Everything in the window is translated, including the progress line, the
+  connection pill and queue steps the service sends. The **log stays in
+  English** — most of it is yt-dlp's and ffmpeg's own output. Menu paths
+  inside Resolve and Premiere (`Window → UXP Plugins → …`) stay as the
+  editors show them in English.
+
 ## First run
 
 - A welcome window asks which editor you use. **DaVinci Resolve** explains
@@ -39,6 +51,18 @@ unchanged.
 ## Source
 
 - **Link field** with a link icon and a "Paste a video link…" placeholder.
+- **Bin field** under it (folder icon), empty by default. A bin is a subfolder
+  of the clips folder for one project's clips: with `Friday video` in it,
+  downloads go to `<clips folder>/Friday video/<video folder>/`. A **Today**
+  button (calendar icon) beside it fills in today's date as `YYYY-MM-DD`, so
+  date-named bins sort in order. The last bin is remembered between launches
+  (saved as you type, in settings.json).
+  Characters a folder name can't hold are dropped (`Friday/video` →
+  `Friday video`); one level only. Queued links keep the bin they were added
+  with. Inserting a clip from a bin puts it in the editor's bin of the same
+  name: a top-level **Media Pool bin** in Resolve (made if missing; the bin
+  you had open stays open), a top-level **project bin** in Premiere (new
+  imports only; a clip already in the project stays where it is).
 - **In / End point** fields with clock icons. Same formats as before:
   `mm:ss`, `hh:mm:ss`, or plain seconds; both at `00:00` = the entire video.
 - **Automatic `?t=` detection** — a link with a timestamp (`?t=90`, `&t=2m5s`,
@@ -114,7 +138,12 @@ by 1.x. The header shows the count, an open-folder button and a refresh.
 
 Each row shows the **thumbnail**, **title**, **channel**, what it is and how
 long it is (in accent colour: `Clip 1 · 30s`, `from 09:19 · 30s`,
-`Entire video · 8:23`), the **file size** and **when** it was made. Lengths
+`Entire video · 8:23`), the **file size** and **when** it was made. A clip in
+a bin gets a small folder tag with the bin's name in front of its details.
+**Click the tag to show only that bin**: the bin appears next to the count
+(click it, or the tag again, to show everything), the open-folder button opens
+the bin's folder, and Select all / bulk insert / bulk delete work on what's
+shown. Lengths
 under two minutes read as `Ns`, longer ones as `m:ss`. Clips that predate 2.0
 get their length probed once in the background and remembered.
 
@@ -129,7 +158,8 @@ Row actions:
   greyed out when unknown).
 - **📁 Folder** — open the clip's folder in the file manager.
 - **🗑 Delete** — two-step, inline: the row turns red with **Delete / Keep**,
-  no dialog. Removes the file and its info; drops the folder once it's empty.
+  no dialog. Removes the file and its info; drops the folder once it's empty
+  (and its bin's folder, when that's empty too).
   Refused while a job is running.
 
 - **Click the title to copy it; click the channel to copy it.** A green

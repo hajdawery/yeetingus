@@ -320,6 +320,9 @@ class Capabilities:
     """What this machine can do, found by trying rather than by asking."""
     av1_encoder: str | None = None     # a hardware AV1 encoder that initialised
     hevc_encoder: str | None = None    # a hardware HEVC encoder (for Premiere)
+    # VideoToolbox takes a -q:v quality only in arm64 builds of ffmpeg; an
+    # Intel one (or one under Rosetta) refuses it, and needs a bitrate.
+    vt_qscale: bool = True
 
     def describe(self) -> str:
         parts = []
@@ -330,12 +333,13 @@ class Capabilities:
         return " · ".join(parts)
 
 
-def _try_encoder(ffmpeg: str, encoder: str, timeout: float = 30) -> bool:
+def _try_encoder(ffmpeg: str, encoder: str, timeout: float = 30,
+                 extra: tuple[str, ...] = ()) -> bool:
     """Encode eight synthetic frames. Only a clean exit counts — a listed
     encoder fails here whenever the GPU, driver or API is absent."""
     cmd = [ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi",
            "-i", "color=c=gray:s=640x360:r=30", "-frames:v", "8",
-           "-c:v", encoder, "-f", "null", "-"]
+           "-c:v", encoder, *extra, "-f", "null", "-"]
     try:
         return _run(cmd, timeout=timeout).returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -354,7 +358,19 @@ def probe_capabilities(ffmpeg: str, platform: str = sys.platform) -> Capabilitie
         if _try_encoder(ffmpeg, enc):
             caps.hevc_encoder = enc
             break
+    if caps.hevc_encoder == "hevc_videotoolbox":
+        caps.vt_qscale = _try_encoder(ffmpeg, "hevc_videotoolbox", extra=("-q:v", "60"))
     return caps
+
+
+def _vt_bitrate(height: int) -> str:
+    """A bitrate for VideoToolbox where it can't take a quality: generous,
+    since this is an editing intermediate, scaled with the picture."""
+    if height <= 1080:
+        return "25M"
+    if height <= 1440:
+        return "40M"
+    return "70M"
 
 
 # --------------------------------------------------------------------------- #
@@ -457,7 +473,8 @@ def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None,
             p.video_args += ["-quality", "speed", "-rc", "cqp", "-qp_i", NVENC_CQ,
                              "-qp_p", NVENC_CQ, "-pix_fmt", "p010le" if ten_bit else "nv12"]
         elif enc == "hevc_videotoolbox":
-            p.video_args += ["-q:v", "60", "-pix_fmt", "p010le" if ten_bit else "nv12"]
+            quality = ["-q:v", "60"] if caps.vt_qscale else ["-b:v", _vt_bitrate(src.height)]
+            p.video_args += [*quality, "-pix_fmt", "p010le" if ten_bit else "nv12"]
         else:                                     # hevc_vaapi
             p.video_args += ["-qp", NVENC_CQ]
         if ten_bit:
@@ -501,7 +518,9 @@ def plan(src: SourceInfo, caps: Capabilities, section: Section | None = None,
         src_rate, p.rate, p.conformed = p.rate, Fraction(target_fps), True
         # The GOP follows the output rate: still one keyframe per half second.
         p.gop = gop_frames(p.rate)
-        p.video_args = [a if a != str(gop) else str(p.gop) for a in p.video_args]
+        # Only the value after -g: the same number can be a quality setting.
+        g = p.video_args.index("-g")
+        p.video_args[g + 1] = str(p.gop)
         tgt = f"{p.rate.numerator}/{p.rate.denominator}"
         near = abs(float(src_rate) / float(p.rate) - 1.0) < 0.005
         if near:

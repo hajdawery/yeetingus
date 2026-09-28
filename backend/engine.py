@@ -247,6 +247,9 @@ Listener = Callable[[dict], None]
 QUEUE_WORKERS = 3
 
 
+_CURRENT = object()       # _kill_active's "the current job's tool"
+
+
 class _JobCtx:
     """Per-job state. The single job uses the engine's own; each queued
     download runs on its own thread with its own, so they can run side by
@@ -317,6 +320,12 @@ class Engine:
         self._editor_lock = threading.RLock()
         self._listeners: list[Listener] = []
         self._listeners_lock = threading.Lock()
+        # Numbering and delivering an event happen under one lock: numbered
+        # under it but delivered outside, two threads could hand event N+1 to
+        # a stream before N, and the stream drops anything numbered lower
+        # than what it has already sent — a lost "busy: false" left the
+        # window stuck busy. Reentrant, in case a listener ever emits.
+        self._emit_lock = threading.RLock()
         self.history: deque[dict] = deque(maxlen=self.HISTORY)
         # Every event gets the next number, so a client that drops its stream
         # can ask for everything after the last one it saw.
@@ -324,6 +333,8 @@ class Engine:
 
         self.busy = False
         self._busy_lock = threading.Lock()
+        # Tool installs/updates in progress, by name (ytdlp, ffmpeg, js, …).
+        self.tools_busy: dict[str, bool] = {}
         self.ytdlp_cmd: list[str] | None = None
         self.ffmpeg_path: str | None = None
         self.ytdlp_version: str | None = None
@@ -347,6 +358,8 @@ class Engine:
         self.retime = self.settings["retime"]
         self.conform = self.settings["conform"]
         self.check_updates = bool(self.settings.get("check_updates", True))
+        self.bin = self.settings["bin"]
+        self.language = self.settings["language"]
         # What the last update check found (see check_for_update).
         self.update_info: dict = {
             "current": __version__, "latest": None, "available": False,
@@ -385,26 +398,25 @@ class Engine:
                 self._listeners.remove(fn)
 
     def emit(self, kind: str, **data) -> None:
-        with self._listeners_lock:
+        with self._emit_lock:
             self._seq += 1
-            seq = self._seq
-        event = {"kind": kind, "seq": seq, "t": time.time(), **data}
-        if kind == "log":
-            self.history.append(event)
-        elif kind == "resolve":
-            self.resolve_state = {"text": data["text"], "level": data["level"]}
-        elif kind == "progress":
-            if data.get("fraction") is not None:
-                self.last_progress["fraction"] = data["fraction"]
-            if data.get("step") is not None:
-                self.last_progress["step"] = data["step"]
-        with self._listeners_lock:
-            listeners = list(self._listeners)
-        for fn in listeners:
-            try:
-                fn(event)
-            except Exception:  # noqa: BLE001 — one broken listener mustn't stop the rest
-                pass
+            event = {"kind": kind, "seq": self._seq, "t": time.time(), **data}
+            if kind == "log":
+                self.history.append(event)
+            elif kind == "resolve":
+                self.resolve_state = {"text": data["text"], "level": data["level"]}
+            elif kind == "progress":
+                if data.get("fraction") is not None:
+                    self.last_progress["fraction"] = data["fraction"]
+                if data.get("step") is not None:
+                    self.last_progress["step"] = data["step"]
+            with self._listeners_lock:
+                listeners = list(self._listeners)
+            for fn in listeners:
+                try:
+                    fn(event)
+                except Exception:  # noqa: BLE001 — one broken listener mustn't stop the rest
+                    pass
 
     def log(self, msg: str, tag: str | None = None) -> None:
         """`tag` forces a log style; without it the style is guessed from the text.
@@ -437,6 +449,7 @@ class Engine:
         self.emit("busy", busy=busy)
 
     def _tool_busy(self, tool: str, busy: bool) -> None:
+        self.tools_busy[tool] = busy
         self.emit("tool_busy", tool=tool, busy=busy)
 
     def _tools_changed(self) -> None:
@@ -479,6 +492,7 @@ class Engine:
             "booted": self.booted,
             "busy": self.busy,
             "queue": self.queue_snapshot(),
+            "tool_busy": dict(self.tools_busy),
             "update": dict(self.update_info),
             "editor": self.editor,
             "editors": list(config.EDITORS),
@@ -495,6 +509,8 @@ class Engine:
                 "retime": self.retime,
                 "conform": self.conform,
                 "check_updates": self.check_updates,
+                "bin": self.bin,
+                "language": self.language,
             },
             "retimes": list(config.RETIMES),
             "quality_options": list(QUALITY_OPTIONS),
@@ -509,50 +525,38 @@ class Engine:
                         onboarded: bool | None = None,
                         retime: str | None = None,
                         conform: str | bool | None = None,
-                        check_updates: bool | None = None) -> str | None:
+                        check_updates: bool | None = None,
+                        bin_name: str | None = None,
+                        language: str | None = None) -> str | None:
         """Apply and persist what changed. Returns the path written, or None if
-        nothing changed. Raises ValueError for an unusable value."""
-        changed = False
+        nothing changed. Raises ValueError for an unusable value — before
+        anything is applied, so a bad field never leaves the others half-set."""
+        new: dict = {}
         if download_dir is not None:
-            new_dir = download_dir.strip()
-            if not new_dir:
+            if not isinstance(download_dir, str) or not download_dir.strip():
                 raise ValueError("clips folder can't be empty")
-            if new_dir != self.download_dir:
-                self.settings["download_dir"] = new_dir
-                self.download_dir = new_dir
-                changed = True
+            # "~/Movies" or a relative path would otherwise land relative to
+            # wherever the service runs — inside the app's own folder.
+            path = os.path.expanduser(download_dir.strip())
+            if not os.path.isabs(path):
+                raise ValueError("the clips folder must be a full path")
+            new["download_dir"] = os.path.normpath(path)
         if default_length is not None:
-            if not isinstance(default_length, int) or \
-                    not 1 <= default_length <= config.MAX_LENGTH:
+            if type(default_length) is not int or not 1 <= default_length <= config.MAX_LENGTH:
                 raise ValueError("default length must be a whole number of seconds")
-            if default_length != self.default_length:
-                self.settings["default_length"] = default_length
-                self.default_length = default_length
-                changed = True
+            new["default_length"] = default_length
         if editor is not None:
             if editor not in config.EDITORS:
                 raise ValueError(f"unknown editor '{editor}'")
-            if editor != self.editor:
-                self.settings["editor"] = editor
-                self.editor = editor
-                changed = True
-                self.log("Clips go to " + ("Premiere Pro." if editor == "premiere"
-                                           else "DaVinci Resolve."))
-                self.refresh_connection()
+            new["editor"] = editor
         if retime is not None:
             if retime not in config.RETIMES:
                 raise ValueError(f"unknown retime process '{retime}'")
-            if retime != self.retime:
-                self.settings["retime"] = retime
-                self.retime = retime
-                changed = True
+            new["retime"] = retime
         if check_updates is not None:
             if not isinstance(check_updates, bool):
                 raise ValueError("check_updates must be true or false")
-            if check_updates != self.check_updates:
-                self.settings["check_updates"] = check_updates
-                self.check_updates = check_updates
-                changed = True
+            new["check_updates"] = check_updates
         if conform is not None:
             if conform is True:
                 conform = "sharp"
@@ -560,18 +564,47 @@ class Engine:
                 conform = "off"
             if conform not in config.CONFORMS:
                 raise ValueError(f"unknown conform mode '{conform}'")
-            if conform != self.conform:
-                self.settings["conform"] = conform
-                self.conform = conform
-                changed = True
-        if onboarded is not None and bool(onboarded) != self.settings.get("onboarded"):
-            self.settings["onboarded"] = bool(onboarded)
-            changed = True
+            new["conform"] = conform
+        if language is not None:
+            if language not in config.LANGUAGES:
+                raise ValueError(f"unknown language '{language}'")
+            new["language"] = language
+        if onboarded is not None:
+            new["onboarded"] = bool(onboarded)
+        if bin_name is not None:
+            if not isinstance(bin_name, str):
+                raise ValueError("bin must be text")
+            new["bin"] = bin_name.strip()[:200]
+
+        changed = {k: v for k, v in new.items() if self.settings.get(k) != v}
         if not changed:
             return None
-        path = config.save(self.settings)
-        self.log(f"Settings saved → {path}")
+        before = dict(self.settings)
+        self.settings.update(changed)
+        try:
+            path = config.save(self.settings)
+        except OSError:
+            self.settings = before          # nothing applied that wasn't saved
+            raise
+        self.download_dir = self.settings["download_dir"]
+        self.default_length = self.settings["default_length"]
+        self.editor = self.settings["editor"]
+        self.retime = self.settings["retime"]
+        self.conform = self.settings["conform"]
+        self.check_updates = bool(self.settings["check_updates"])
+        self.language = self.settings["language"]
+        self.bin = self.settings["bin"]
+        # The bin is saved as it's typed, which shouldn't fill the log.
+        if any(k != "bin" for k in changed):
+            self.log(f"Settings saved → {path}")
         self.emit("settings", **self.state()["settings"])
+        if "editor" in changed:
+            self.log("Clips go to " + ("Premiere Pro." if self.editor == "premiere"
+                                       else "DaVinci Resolve."))
+            # After the settings event, whose arrival resets the front end's
+            # connection pill to "checking…": checked first, the answer
+            # could be overwritten by that and never come again.
+            self.refresh_connection()
         return path
 
     # ---- Premiere ------------------------------------------------------------ #
@@ -870,11 +903,15 @@ class Engine:
 
     @staticmethod
     def _track_note(res: dict) -> str:
-        """" on V2 (new track)" when the clip didn't go on the first track."""
+        """" on V2 (new track)" when the clip didn't go on the first track,
+        and which bin it was imported into, if any."""
         n = res.get("trackIndex") or 1
-        if n == 1:
-            return ""
-        return f" on V{n}" + (" (new track)" if res.get("newTrack") or res.get("usedNewTrack") else "")
+        note = ""
+        if n != 1:
+            note = f" on V{n}" + (" (new track)" if res.get("newTrack") or res.get("usedNewTrack") else "")
+        if res.get("bin"):
+            note += f" (bin '{res['bin']}')"
+        return note
 
     def _note_retime(self, res: dict) -> None:
         r = res.get("retimed")
@@ -907,13 +944,17 @@ class Engine:
         return self._timeline_fps
 
     def _editor_insert(self, path: str, insert_at: str) -> dict:
-        """Paste a file into whichever editor is chosen. Same result shape."""
+        """Paste a file into whichever editor is chosen. Same result shape.
+        A clip from a bin goes into the editor's bin of the same name."""
+        bin_name = self._bin_of(path)
         if self.editor == "premiere":
             info = self._probe_media(path)
             with self._editor_lock:
-                return self.premiere.insert(path, insert_at, has_video=bool(info and info.vcodec))
+                return self.premiere.insert(path, insert_at, has_video=bool(info and info.vcodec),
+                                            bin_name=bin_name)
         with self._editor_lock:
-            return resolve_bridge.import_and_insert(path, insert_at=insert_at, retime=self.retime)
+            return resolve_bridge.import_and_insert(path, insert_at=insert_at, retime=self.retime,
+                                                    bin_name=bin_name)
 
     # ---- yt-dlp update ----------------------------------------------------- #
 
@@ -1140,7 +1181,7 @@ class Engine:
 
     def start_job(self, url: str, in_text: str, out_text: str,
                   max_height: int | None, insert_at: str,
-                  insert: bool = True) -> bool:
+                  insert: bool = True, bin_name: str = "") -> bool:
         """Validate and launch a job on a worker thread.
 
         Returns False (after logging why) if nothing was started. The form's
@@ -1160,6 +1201,9 @@ class Engine:
             return False
         if insert_at not in INSERT_MODES:
             self.log(f"ERROR: unknown insert mode '{insert_at}'.")
+            return False
+        folder = self._bin_folder(bin_name)
+        if folder is None:
             return False
         if insert and not self.check_connection(quiet=True):
             # Refused before the download, not after it: the chosen editor
@@ -1181,21 +1225,37 @@ class Engine:
             self._set_busy(True)
         threading.Thread(
             target=self.run_job,
-            args=(url, start, end, max_height, insert_at, insert),
+            args=(url, start, end, max_height, insert_at, insert, folder),
             daemon=True,
         ).start()
         return True
 
+    def _bin_folder(self, bin_name: str | None) -> str | None:
+        """The bin's folder name ("" for none), or None (after logging why)
+        when the name has nothing a folder name can hold."""
+        text = (bin_name or "").strip()
+        folder = naming.bin_folder(text)
+        if text and not folder:
+            self.log(f"ERROR: '{text}' can't be a folder name — "
+                     "use letters or digits for the bin.")
+            return None
+        return folder
+
     def cancel(self) -> bool:
-        if not self.busy or self.cancel_event.is_set():
+        if not self.busy:
             return False
+        if self.cancel_event.is_set():
+            # A second STOP: the first may have landed while no tool was
+            # registered yet. Try the kill again rather than ignore it.
+            self._kill_active()
+            return True
         self.cancel_event.set()
         self.log("Stopping…")
         self._progress(step="Stopping…")
         self._kill_active()
         return True
 
-    def _kill_active(self, proc: subprocess.Popen | None = None) -> None:
+    def _kill_active(self, proc: subprocess.Popen | None | object = _CURRENT) -> None:
         """Kill the running tool and everything it spawned.
 
         yt-dlp spawns ffmpeg, so the whole tree has to go — killing only the
@@ -1206,7 +1266,11 @@ class Engine:
         process group that spawn_kwargs established, giving it a SIGTERM to
         close its files before escalating to SIGKILL.
         """
-        proc = proc or self.active_proc
+        # Only "no argument" means this thread's job's tool. An explicit None
+        # (a queued job between tools) kills nothing — falling back to
+        # active_proc there reached the main job's yt-dlp instead.
+        if proc is _CURRENT:
+            proc = self.active_proc
         if not proc or proc.poll() is not None:
             return
         try:
@@ -1238,6 +1302,16 @@ class Engine:
     def _cancelled(self) -> bool:
         return self.cancel_event.is_set()
 
+    def shutdown(self) -> None:
+        """The app is closing: stop every running tool. yt-dlp and ffmpeg
+        run in their own process groups, so they'd otherwise outlive the
+        service and keep downloading into the clips folder."""
+        with self._queue_lock:
+            contexts = [self._main_ctx, *self._queue_ctx.values()]
+        for ctx in contexts:
+            ctx.cancel_event.set()
+            self._kill_active(ctx.active_proc)
+
     def probe_metadata(self, url: str, quiet: bool = False) -> dict:
         """Look up id/title/channel before downloading, so the clip can be filed
         under a descriptive folder. Best effort — a failure just means a plainer
@@ -1256,7 +1330,14 @@ class Engine:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 **spawn_kwargs(),
             )
-            self.active_proc = proc
+            # A job's lookup takes the job's slot so STOP reaches it. A quiet
+            # one is a link preview on a request thread, which shares the
+            # main job's context: registering it there would overwrite (and
+            # then clear) a running job's yt-dlp, leaving STOP nothing to kill.
+            if not quiet:
+                self.active_proc = proc
+                if self._cancelled():
+                    self._kill_active(proc)
             try:
                 out, err = proc.communicate(timeout=120)
             except subprocess.TimeoutExpired:
@@ -1264,8 +1345,12 @@ class Engine:
                 proc.communicate()
                 raise
             finally:
-                self.active_proc = None
-            if self._cancelled():
+                if not quiet:
+                    self.active_proc = None
+            # Only a job's own lookup is cut short by STOP; the main job's
+            # cancel flag stays set after a stop, and a preview checking it
+            # came back empty for every link until the next job started.
+            if not quiet and self._cancelled():
                 return dict(_EMPTY_META)
             proc = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
             if proc.returncode == 0 and (proc.stdout or "").strip():
@@ -1410,7 +1495,13 @@ class Engine:
             # same HH:MM:SS form as the one the user typed — --download-sections
             # takes a single "*start-end" string, and mixing "00:00:60.00" with
             # "01:15" inside it is asking for a parsing surprise.
-            end = normalize_timestamp(seconds_to_timestamp(round(duration))) or end
+            # The exact length, not rounded: rounding down could land on the
+            # in point and ask for an empty section.
+            end = normalize_timestamp(f"{duration:.3f}") or end
+            if to_seconds(end) <= to_seconds(start):
+                self.log(f"ERROR: the in point ({start}) is at the very end of this "
+                         f"video, which is {length} long.")
+                return None
         return start, end
 
     def _explain_403(self, got_bytes: bool, age_gated: bool) -> None:
@@ -1479,8 +1570,21 @@ class Engine:
         if info is None:
             self.log("ERROR: can't read the download back; nothing to prepare.")
             return None
-        out = os.path.splitext(raw.replace(SOURCE_TAG + ".", "."))[0] + ".mp4"
-        return self._transcode(raw, info, section, out, keep_source=False)
+        # The tag comes off the file name only: a folder can have ".src." in
+        # its name too (a video titled "app.src.ts", say).
+        folder, name = os.path.split(raw)
+        out = os.path.join(folder, os.path.splitext(name.replace(SOURCE_TAG + ".", "."))[0] + ".mp4")
+        result = self._transcode(raw, info, section, out, keep_source=False)
+        if result is None:
+            # Nothing will use the raw download now. Left behind it is hidden
+            # from the clips list, keeps its clip number taken and its folder
+            # alive — and a whole video's would be picked up by yt-dlp as
+            # "already downloaded" next time, whatever quality it was.
+            try:
+                os.remove(raw)
+            except OSError:
+                pass
+        return result
 
     def _transcode(self, src_path: str, info: media.SourceInfo,
                    section: media.Section | None, out: str,
@@ -1498,7 +1602,9 @@ class Engine:
         caps = (media.Capabilities(av1_encoder=None, hevc_encoder=None)
                 if self._ctx().cpu_only else (self.caps or media.Capabilities()))
 
-        target = self._conform_target()
+        # A copy of an existing clip for the other editor keeps its rate (see
+        # _for_editor); only a new clip is conformed to the timeline.
+        target = None if keep_source else self._conform_target()
         plan = media.plan(info, caps, section, editor=self.editor, target_fps=target,
                           conform=self.conform if self.conform != "off" else "sharp")
         media.assert_allowed_encoder(plan)
@@ -1527,16 +1633,32 @@ class Engine:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, bufsize=1, **spawn_kwargs())
         self.active_proc = proc
-        assert proc.stdout is not None
+        if self._cancelled():
+            self._kill_active(proc)     # STOP landed before the tool was registered
+        assert proc.stdout is not None and proc.stderr is not None
+        # stderr is read on the side: left alone until stdout ends, a chatty
+        # ffmpeg (a damaged input logging every frame) fills the pipe and
+        # blocks, and so does this loop waiting for its progress.
+        err_tail: deque[str] = deque(maxlen=40)
+
+        def drain(stream=proc.stderr) -> None:
+            for text in stream:
+                err_tail.append(text.rstrip())
+
+        drainer = threading.Thread(target=drain, daemon=True)
+        drainer.start()
         for line in proc.stdout:
             if self._cancelled():
+                self._kill_active(proc)
                 break
             m = _FFMPEG_TIME_RE.match(line)
             if m and total > 0:
                 done = min(int(m.group(1)) / 1_000_000 / total, 1.0)
                 self._progress(P_DOWNLOAD + (P_PREPARE - P_DOWNLOAD) * done,
                                f"Preparing… {done * 100:.0f}%")
-        _, err = proc.communicate()
+        proc.wait()
+        drainer.join(timeout=5)
+        err = "\n".join(err_tail)
         self.active_proc = None
 
         if self._cancelled() or proc.returncode != 0:
@@ -1565,6 +1687,10 @@ class Engine:
             os.replace(tmp, out)
         except OSError as e:
             self.log(f"Prepared fine but couldn't move the result into place: {e}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             return None
         if not keep_source:
             try:
@@ -1595,6 +1721,10 @@ class Engine:
         if os.path.isfile(sibling) and os.path.getsize(sibling) > 0:
             self.log(f"Using {os.path.basename(sibling)} for {editor_name}.")
             return sibling
+        if not self._reserve(sibling):
+            self.log(f"ERROR: {os.path.basename(sibling)} is being made by another "
+                     "download right now; try again when it's done.")
+            return None
         self.log(f"Converting a copy of {os.path.basename(path)}: " + "; ".join(why) + "…")
         return self._transcode(path, info, None, sibling, keep_source=True)
 
@@ -1640,15 +1770,17 @@ class Engine:
         self.log(f"Using {chosen}p (capped at {max_height}p).")
         return max_height
 
-    def run_job(self, url, start, end, max_height, insert_at, insert=True) -> None:
+    def run_job(self, url, start, end, max_height, insert_at, insert=True,
+                bin_name="") -> None:
         """The whole job, blocking. start_job is the normal way in."""
         try:
-            self._job(url, start, end, max_height, insert_at, insert)
+            self._job(url, start, end, max_height, insert_at, insert, bin_name)
         finally:
             self.active_proc = None
             self._set_busy(False)
 
-    def _job(self, url, start, end, max_height, insert_at, insert=True) -> str:
+    def _job(self, url, start, end, max_height, insert_at, insert=True,
+             bin_name="") -> str:
         """Download, prepare and (optionally) insert one clip. Returns
         "done", "failed" or "cancelled". Shared by the single job and the
         queue; everything per-job lives in the current _JobCtx."""
@@ -1677,7 +1809,7 @@ class Engine:
                 return "failed"
             start, end = checked
 
-            raw = self._download(url, start, end, max_height, meta)
+            raw = self._download(url, start, end, max_height, meta, bin_name)
             if self._cancelled():
                 self._stopped()
                 return "cancelled"
@@ -1701,6 +1833,14 @@ class Engine:
                 self.reveal_log()
                 return "failed"
 
+            # The clip is finished: file its info and list it now, so a failed
+            # insert below still leaves it in the library to insert from.
+            info = self._probe_media(path)
+            self._write_sidecar(_SIBLING_RE.sub(".mp4", path), url, meta, start, end,
+                                info.describe() if info else None,
+                                info.duration if info else None)
+            self.emit("clips")
+
             if insert:
                 # Past this point the file exists; the insert itself is quick and
                 # atomic enough that we let it finish rather than half-cancel it.
@@ -1717,14 +1857,9 @@ class Engine:
 
             # Recap what we got — the filename is only an id, so the
             # human-readable title and channel are worth restating here.
-            info = self._probe_media(path)
             self.log(f"  Video:   {meta.get('title') or 'unknown'}")
             self.log(f"  Channel: {meta.get('channel') or 'unknown'}")
             self.log(f"  Quality: {info.describe() if info else 'unknown'}")
-            self._write_sidecar(_SIBLING_RE.sub(".mp4", path), url, meta, start, end,
-                                info.describe() if info else None,
-                                info.duration if info else None)
-            self.emit("clips")
 
             self.log("Make sure to credit the sources!", tag="highlight")
             self._progress(1.0, f"Done — {res['clipName']}")
@@ -1794,7 +1929,7 @@ class Engine:
 
     def queue_add(self, url: str, in_text: str, out_text: str,
                   max_height: int | None, title: str = "",
-                  thumbnail: str | None = None) -> dict | None:
+                  thumbnail: str | None = None, bin_name: str = "") -> dict | None:
         """Validate a link and put it in the queue. None (after logging why)
         if it was refused."""
         if not self.ytdlp_cmd:
@@ -1809,16 +1944,20 @@ class Engine:
         except ValueError as e:
             self.log(f"ERROR: {e}")
             return None
+        folder = self._bin_folder(bin_name)
+        if folder is None:
+            return None
         with self._queue_lock:
             for item in self.queue:
                 if (item["url"] == url and item["start"] == start and item["end"] == end
+                        and item["bin"] == folder
                         and item["status"] in ("queued", "running")):
                     self.log("That clip is already in the queue.")
                     return None
             number = 1 + max((i["number"] for i in self.queue), default=0)
             item = {
                 "id": uuid.uuid4().hex[:10], "number": number, "url": url,
-                "start": start, "end": end, "max_height": max_height,
+                "start": start, "end": end, "max_height": max_height, "bin": folder,
                 "title": title or "", "channel": "", "thumbnail": thumbnail,
                 "status": "queued", "fraction": 0.0, "step": "Queued",
             }
@@ -1854,14 +1993,16 @@ class Engine:
         try:
             self.log(f"Queued download started: {item['url']}")
             status = self._job(item["url"], item["start"], item["end"],
-                               item["max_height"], "playhead", insert=False)
+                               item["max_height"], "playhead", insert=False,
+                               bin_name=item["bin"])
             if status == "failed" and not ctx.cancel_event.is_set():
                 # Several downloads at once trip the odd transient error
                 # (a 403, a dropped connection); one retry clears most.
                 self.log("Retrying once…")
                 self._queue_update(item["id"], step="Retrying…", fraction=0.0)
                 status = self._job(item["url"], item["start"], item["end"],
-                                   item["max_height"], "playhead", insert=False)
+                                   item["max_height"], "playhead", insert=False,
+                                   bin_name=item["bin"])
         except Exception as e:  # noqa: BLE001 — _job catches its own; belt and braces
             self.log(f"ERROR: {e}")
         finally:
@@ -1885,7 +2026,7 @@ class Engine:
         if ctx is not None:
             ctx.cancel_event.set()
             self._queue_update(qid, step="Stopping…")
-            self._kill_active(ctx.active_proc)
+            self._kill_active(ctx.active_proc)   # None between tools: nothing
         else:
             self._queue_changed()
         return True
@@ -1929,6 +2070,8 @@ class Engine:
     # plus a "<stem>.json" sidecar written after each job with what the folder
     # name can't hold exactly (the full title, the thumbnail, the section).
     # Clips made before the sidecar existed are listed from their names.
+    # A bin is one more level: "<bin>/<video folder>/…". Video folders never
+    # hold folders of their own, so a folder that does is a bin.
 
     SIDECAR_EXT = ".json"
 
@@ -1987,6 +2130,16 @@ class Engine:
             return False
         return not low.endswith((".part", ".ytdl", ".temp"))
 
+    def _bin_of(self, path: str) -> str:
+        """The bin a clip sits in ("" for none), from its place on disk:
+        "<clips folder>/<bin>/<video folder>/<file>"."""
+        try:
+            rel = os.path.relpath(os.path.realpath(path), os.path.realpath(self.download_dir))
+        except ValueError:
+            return ""           # another drive
+        parts = rel.split(os.sep)
+        return parts[0] if len(parts) == 3 and parts[0] != os.pardir else ""
+
     def _inside_library(self, path: str) -> bool:
         root = os.path.realpath(self.download_dir)
         target = os.path.realpath(path)
@@ -2004,7 +2157,8 @@ class Engine:
         except OSError:
             return clips
 
-        def add(folder: str, name: str, video_id: str, title: str, channel: str) -> None:
+        def add(folder: str, name: str, video_id: str, title: str, channel: str,
+                bin_name: str = "") -> None:
             path = os.path.join(folder, name)
             try:
                 st = os.stat(path)
@@ -2032,19 +2186,26 @@ class Engine:
                 "mtime": side.get("created") or st.st_mtime,
                 "duration": side.get("duration"),
                 "source": self.clip_source_url(path),
+                "bin": bin_name,
             })
+
+        def scan(folder: str, bin_name: str) -> None:
+            """A video folder's clips; at the top level, also a bin's videos."""
+            video_id, title, channel = self._parse_folder(os.path.basename(folder))
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                return
+            for name in names:
+                if self._is_finished_clip(name):
+                    add(folder, name, video_id, title, channel, bin_name)
+                elif not bin_name and os.path.isdir(os.path.join(folder, name)):
+                    scan(os.path.join(folder, name), os.path.basename(folder))
 
         for entry in entries:
             full = os.path.join(root, entry)
             if os.path.isdir(full):
-                video_id, title, channel = self._parse_folder(entry)
-                try:
-                    names = os.listdir(full)
-                except OSError:
-                    continue
-                for name in names:
-                    if self._is_finished_clip(name):
-                        add(full, name, video_id, title, channel)
+                scan(full, "")
             elif self._is_finished_clip(entry):
                 # Older layout: clips straight in the root.
                 add(root, entry, "", "", "")
@@ -2115,6 +2276,7 @@ class Engine:
     def _insert_existing(self, paths: list[str], insert_at: str) -> None:
         total = len(paths)
         self._ctx().cpu_only = False
+        self._timeline_fps = None
         try:
             last = None
             for i, path in enumerate(paths):
@@ -2162,6 +2324,7 @@ class Engine:
             self.reveal_log()
         finally:
             self.active_proc = None
+            self._release_reserved()
             self._set_busy(False)
 
     def delete_clip(self, path: str) -> bool:
@@ -2186,13 +2349,17 @@ class Engine:
                 os.remove(extra)
             except OSError:
                 pass
+        # The video's folder once it's empty, then its bin's.
         folder = os.path.dirname(path)
-        try:
-            if os.path.realpath(folder) != os.path.realpath(self.download_dir) \
-                    and not os.listdir(folder):
+        for _ in range(2):
+            try:
+                if os.path.realpath(folder) == os.path.realpath(self.download_dir) \
+                        or os.listdir(folder):
+                    break
                 os.rmdir(folder)
-        except OSError:
-            pass
+            except OSError:
+                break
+            folder = os.path.dirname(folder)
         self.log(f"Deleted {os.path.basename(path)}.")
         self.emit("clips")
         return True
@@ -2264,7 +2431,8 @@ class Engine:
             self.log(f"! couldn't delete {name} — something still has it open.")
             self.log("  Delete it by hand if the next attempt reuses it.")
 
-    def _download(self, url, start, end, max_height, meta: dict) -> str | None:
+    def _download(self, url, start, end, max_height, meta: dict,
+                  bin_name: str = "") -> str | None:
         # Checked explicitly, because the bare OSError from makedirs surfaces as
         # "[WinError 3] The system cannot find the path specified: 'Q:\\'" with
         # nothing to say it is the clips folder. The realistic cause is a clip
@@ -2286,8 +2454,13 @@ class Engine:
         folder_title = "" if naming.title_is_post_text(
             meta.get("extractor", ""), meta.get("title", ""),
             meta.get("description", ""), meta.get("channel", "")) else meta.get("title", "")
-        job_dir = naming.ensure_clip_folder(
-            self.download_dir, video_id, folder_title, meta.get("channel", ""))
+        root = os.path.join(self.download_dir, bin_name) if bin_name else self.download_dir
+        try:
+            job_dir = naming.ensure_clip_folder(
+                root, video_id, folder_title, meta.get("channel", ""))
+        except OSError as e:
+            self.log(f"ERROR: can't create the clip's folder — {e}")
+            return None
         whole = start is None or end is None
         channel = meta.get("channel", "")
 
@@ -2298,7 +2471,9 @@ class Engine:
                 self.log("ERROR: this whole video is already downloading "
                          "(in the queue or the main job).")
                 return None
-            existing = self._existing_download(job_dir, stem)
+            # Without a real id every such link files under "unknown-id", so
+            # an existing file there could be a different video.
+            existing = self._existing_download(job_dir, stem) if meta.get("id") else None
             if existing and not self._looks_complete(existing, meta):
                 # Left by an interrupted attempt. Removed rather than resumed:
                 # yt-dlp has no idea it's there, and leaving it would mean
@@ -2335,7 +2510,7 @@ class Engine:
                     stem = stem[:m.start()] + f"{int(m.group(1)) + 1:03d}"
                 self._reserve(os.path.join(job_dir, stem))
 
-        self.log(f"Folder: {os.path.basename(job_dir)}")
+        self.log(f"Folder: {os.path.relpath(job_dir, self.download_dir)}")
         self.log(f"File:   {stem}.mp4")
 
         cmd = [
@@ -2374,6 +2549,8 @@ class Engine:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1, **spawn_kwargs())
         self.active_proc = proc
+        if self._cancelled():
+            self._kill_active(proc)     # STOP landed before the tool was registered
         assert proc.stdout is not None
         saw_403 = False
         saw_no_js = False
@@ -2382,6 +2559,9 @@ class Engine:
         phase = "prepare"
         for line in proc.stdout:
             if self._cancelled():
+                # Killed, not just abandoned: nobody reads its output any
+                # more, and yt-dlp would block on the full pipe forever.
+                self._kill_active(proc)
                 break
             line = line.rstrip()
             if not line:

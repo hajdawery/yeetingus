@@ -144,6 +144,8 @@ def _timecode_to_frames(tc: str, fps: float) -> int | None:
     Drop-frame timecode skips frame numbers 0-1 (0-3 at 59.94) at the start
     of every minute except each tenth; counting it as non-drop put playhead
     inserts 108 frames late per hour of timecode at 29.97."""
+    if not isinstance(tc, str) or not tc:
+        return None             # Resolve gives nothing on the Media and Fusion pages
     drop = ";" in tc
     parts = tc.replace(";", ":").split(":")
     if len(parts) != 4:
@@ -263,10 +265,22 @@ def _free_track(tl, start: int, length: int) -> tuple[int, bool]:
     return index, created
 
 
+def _pool_bin(pool, name: str):
+    """The top-level media pool bin called `name`, made if missing; None if
+    Resolve won't make it."""
+    root = pool.GetRootFolder()
+    if not root:
+        return None
+    for folder in root.GetSubFolderList() or []:
+        if folder.GetName() == name:
+            return folder
+    return pool.AddSubFolder(root, name) or None
+
+
 def import_and_insert(path: str, insert_at: str = "playhead",
                       track_index: int | None = None,
                       start_frame: int = 0, end_frame: int | None = None,
-                      retime: str = "blend") -> dict:
+                      retime: str = "blend", bin_name: str = "") -> dict:
     """Import `path` into the media pool and place it on the current timeline.
 
     insert_at: "playhead" -> at the current timecode
@@ -282,6 +296,9 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     clip's frame rate differs from the timeline's, so a 60 fps clip on a 24p
     timeline plays smoothly instead of juddering; the result reports whether
     it was.
+
+    bin_name puts the clip in the top-level media pool bin of that name (made
+    if missing) instead of whichever bin is open; the open one stays open.
     """
     if not os.path.isfile(path):
         raise ResolveError(f"File not found: {path}")
@@ -297,7 +314,32 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     pool = project.GetMediaPool()
     storage = app.GetMediaStorage()
 
-    items = storage.AddItemListToMediaPool([os.path.abspath(path)])
+    # Where it goes, read before anything is imported. Resolve only reports
+    # the playhead on the Cut, Edit, Color, Fairlight and Deliver pages;
+    # without it the clip would quietly be appended at the end instead.
+    record_frame = None
+    if insert_at == "playhead":
+        fps = _fps(tl.GetSetting("timelineFrameRate"), 24.0)
+        record_frame = _timecode_to_frames(tl.GetCurrentTimecode(), fps)
+        if record_frame is None:
+            raise ResolveError("Can't read the playhead position. Switch Resolve to the "
+                               "Edit or Cut page and try again.")
+    elif insert_at == "start":
+        record_frame = tl.GetStartFrame()
+    # "end" -> no recordFrame, so Resolve appends.
+
+    # Resolve imports into the current bin, so switch to ours for the import
+    # and back afterwards. The open bin is read first: a bin Resolve has just
+    # made may become the current one. A bin it won't make, or won't switch
+    # to, just means the current one.
+    previous = pool.GetCurrentFolder() if bin_name else None
+    target = _pool_bin(pool, bin_name) if bin_name else None
+    switched = bool(target) and bool(pool.SetCurrentFolder(target))
+    try:
+        items = storage.AddItemListToMediaPool([os.path.abspath(path)])
+    finally:
+        if previous:
+            pool.SetCurrentFolder(previous)
     if not items:
         raise ResolveError(f"Resolve refused to import: {path}")
     item = items[0]
@@ -307,14 +349,8 @@ def import_and_insert(path: str, insert_at: str = "playhead",
         clip_info["startFrame"] = int(start_frame)
     if end_frame is not None:
         clip_info["endFrame"] = int(end_frame)
-    if insert_at == "playhead":
-        fps = _fps(tl.GetSetting("timelineFrameRate"), 24.0)
-        frame = _timecode_to_frames(tl.GetCurrentTimecode(), fps)
-        if frame is not None:
-            clip_info["recordFrame"] = frame
-    elif insert_at == "start":
-        clip_info["recordFrame"] = tl.GetStartFrame()
-    # "end" -> omit recordFrame so Resolve appends.
+    if record_frame is not None:
+        clip_info["recordFrame"] = record_frame
 
     # The lowest free track at that spot (V1/A1 when it's empty), adding a
     # track pair if every one is taken there.
@@ -331,11 +367,10 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     placed_ok = bool(result)
     if placed_ok and "recordFrame" in clip_info:
         # Don't trust the return value: check the clip is really there.
-        target = track_index or 1
         placed_ok = any(x.GetStart() == clip_info["recordFrame"]
                         and (x.GetMediaPoolItem() and
                              x.GetMediaPoolItem().GetMediaId() == item.GetMediaId())
-                        for x in (tl.GetItemListInTrack("video", target) or []))
+                        for x in (tl.GetItemListInTrack("video", track_index or 1) or []))
     if not placed_ok:
         raise ResolveError(
             "Imported to the media pool, but Resolve didn't place it on the timeline. "
@@ -348,6 +383,7 @@ def import_and_insert(path: str, insert_at: str = "playhead",
         "trackIndex": track_index or 1,
         "newTrack": created,
         "retimed": None,
+        "bin": bin_name if switched else None,
     }
 
     # Frame-rate mismatch: pick the retime process on the item Resolve just

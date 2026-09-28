@@ -1,6 +1,7 @@
 """
 naming.py — filesystem-safe names for downloaded clips.
 
+Bin:     "<bin>"  (optional; a folder of video folders, e.g. one per project)
 Folder:  "<VIDEO ID> - <video title> - <channel name>"
 Clip:    "<videoid>-<ChannelName>-c001.mp4"  (numbered, never overwrites)
 Full:    "<videoid>-<ChannelName>-full.mp4"  (fixed name, so it can be reused)
@@ -36,6 +37,7 @@ _RESERVED = {
 MAX_TITLE = 80
 MAX_CHANNEL = 40
 MAX_FOLDER = 130
+MAX_BIN = 60
 
 # Latin letters that carry no combining mark to strip, so NFKD leaves them
 # untouched and _fold_latin would otherwise keep them as-is. Polish ł is the one
@@ -103,7 +105,9 @@ def video_id_from_url(url: str) -> str:
 
 # YouTube's "start at" parameter, in all the shapes it appears in the wild:
 #   ?t=169   &t=169s   &t=2m49s   &t=1h2m3s   ?start=169   #t=90
-_T_PARAM = re.compile(r"[?&#](?:t|start|time_continue)=([0-9hms]+)", re.IGNORECASE)
+# The whole value, up to the next parameter: a tracking token like "t=7kLm…"
+# (X share links) must not read as seven seconds.
+_T_PARAM = re.compile(r"[?&#](?:t|start|time_continue)=([0-9hms]+)(?=$|[&#])", re.IGNORECASE)
 _HMS = re.compile(r"(\d+)\s*([hms])", re.IGNORECASE)
 
 
@@ -219,6 +223,12 @@ def folder_name(video_id: str, title: str = "", channel: str = "") -> str:
     if len(name) > MAX_FOLDER:
         name = name[:MAX_FOLDER].rstrip(" -.")
     return name
+
+
+def bin_folder(text: str) -> str:
+    """The folder name for a bin, or "" for none. One level only: a slash is
+    just another character a folder name can't hold, so "Friday/video" is "Friday video"."""
+    return safe_component(text or "", MAX_BIN)
 
 
 def ensure_clip_folder(root: str, video_id: str, title: str = "",

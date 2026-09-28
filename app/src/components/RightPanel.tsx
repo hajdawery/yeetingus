@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import type { Clip, Meta, QueueItem } from "../api";
 import { Alert, Check, CheckSquare, Download, Film, Folder, Link, Play, Refresh, Square, Trash, User, X } from "../icons";
 import { secondsToTimestamp, toSeconds } from "../time";
+import { useI18n, type I18n } from "../i18n";
 import { IconButton, ProgressBar } from "./ui";
 
 /** YouTube ids are 11 chars of [A-Za-z0-9_-]; for those the thumbnail is derivable. */
@@ -16,6 +17,7 @@ function thumbFor(clip: Clip): string | null {
 function Thumb({ src, className, iconSize, children }: {
   src: string | null | undefined; className: string; iconSize: number; children?: ReactNode;
 }) {
+  const { t } = useI18n();
   const [broken, setBroken] = useState<string | null>(null);
   const ok = Boolean(src) && broken !== src;
   return (
@@ -29,7 +31,7 @@ function Thumb({ src, className, iconSize, children }: {
           onLoad={(e) => { if (e.currentTarget.naturalWidth < 150) setBroken(src!); }}
         />
       ) : (
-        <span className="thumb-placeholder"><Film size={iconSize} /><span>No thumbnail</span></span>
+        <span className="thumb-placeholder"><Film size={iconSize} /><span>{t("No thumbnail")}</span></span>
       )}
       {ok && children}
     </div>
@@ -42,22 +44,24 @@ function fmtSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
 }
 
-function fmtWhen(t: number): string {
+function fmtWhen(t: number, locale: string | undefined): string {
   const d = new Date(t * 1000);
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return sameDay ? time : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+  const time = d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  return sameDay ? time : `${d.toLocaleDateString(locale, { day: "numeric", month: "short" })} ${time}`;
 }
 
 /** "1:30 · 30s" for a section, "Entire video · 10:35" for a whole one. */
-function clipLabel(clip: Clip): string {
+function clipLabel(clip: Clip, t: I18n["t"]): string {
   const len = clip.duration != null
     ? fmtLength(clip.duration)
     : clip.section ? fmtLength(toSeconds(clip.section.end) - toSeconds(clip.section.start)) : null;
   const what = clip.kind === "full"
-    ? "Entire video"
-    : clip.section ? `from ${clip.section.start.replace(/^00:/, "")}` : clip.number != null ? `Clip ${clip.number}` : "Clip";
+    ? t("Entire video")
+    : clip.section
+      ? t("from {start}", { start: clip.section.start.replace(/^00:/, "") })
+      : clip.number != null ? t("Clip {n}", { n: clip.number }) : t("Clip");
   return len ? `${what} · ${len}` : what;
 }
 
@@ -71,22 +75,23 @@ function fmtLength(seconds: number): string {
 export function QueuePanel({ items, onRemove, onClear }: {
   items: QueueItem[]; onRemove: (id: string) => void; onClear: () => void;
 }) {
+  const { t, tr } = useI18n();
   if (items.length === 0) return null;
   const active = items.filter((i) => i.status === "queued" || i.status === "running").length;
   const finished = items.length - active;
   return (
     <div className="queue">
       <header className="panel-head">
-        <h2>Queue</h2>
-        <span className="panel-count">{active ? `${active} left` : "all done"}</span>
+        <h2>{t("Queue")}</h2>
+        <span className="panel-count">{active ? t("{n} left", { n: active }) : t("all done")}</span>
         <span className="log-spacer" />
-        {finished > 0 && <button type="button" className="link-btn" onClick={onClear}>Clear finished</button>}
+        {finished > 0 && <button type="button" className="link-btn" onClick={onClear}>{t("Clear finished")}</button>}
       </header>
       <div className="queue-list">
         {items.map((item) => {
           const range = item.start && item.end
             ? `${item.start.replace(/^00:/, "")}–${item.end.replace(/^00:/, "")}`
-            : "Entire video";
+            : t("Entire video");
           const running = item.status === "running";
           return (
             <div key={item.id} className={`queue-item is-${item.status}`}>
@@ -94,13 +99,14 @@ export function QueuePanel({ items, onRemove, onClear }: {
               <div className="queue-text">
                 <div className="queue-title" title={item.url}>{item.title || item.url}</div>
                 <div className="queue-meta">
+                  {item.bin && <span className="clip-bin" title={t("Bin: {bin}", { bin: item.bin })}><Folder size={12} />{item.bin}</span>}
                   <span>{range}</span>
-                  <span className="queue-step">{item.step}</span>
+                  <span className="queue-step">{tr(item.step)}</span>
                 </div>
                 {running && <ProgressBar fraction={item.fraction} />}
               </div>
               <IconButton
-                label={running ? "Stop this download" : item.status === "queued" ? "Remove from the queue" : "Remove from the list"}
+                label={running ? t("Stop this download") : item.status === "queued" ? t("Remove from the queue") : t("Remove from the list")}
                 onClick={() => onRemove(item.id)}
               >
                 {running ? <Square size={16} /> : <X size={16} />}
@@ -186,28 +192,30 @@ export function PreviewCard({ meta, loading, url, onClear }: {
 function PreviewBody({ meta, loading, onClear }: {
   meta: Meta | null; loading: boolean; onClear: () => void;
 }) {
+  const { t } = useI18n();
   const thumb = meta?.thumbnail;
   const ready = Boolean(meta && !meta.age_restricted && (meta.title || meta.heights.length));
   return (
-    <div className="preview">
-      <Thumb src={thumb} className="preview-thumb" iconSize={22}>
+    <div className={`preview ${loading ? "is-loading" : ""}`}>
+      <Thumb src={thumb} className={`preview-thumb ${loading && !thumb ? "is-loading" : ""}`} iconSize={22}>
         {meta?.duration != null && <span className="thumb-duration">{secondsToTimestamp(meta.duration)}</span>}
       </Thumb>
       <div className="preview-text">
-        <div className="preview-title">{meta?.title || (loading ? "Looking it up…" : meta ? "Unknown title" : "…")}</div>
-        <div className="preview-channel"><User size={14} />{meta?.channel || (loading ? "" : meta ? "Unknown channel" : "")}</div>
+        <div className="preview-title">{meta?.title || (loading ? t("Looking it up…") : meta ? t("Unknown title") : "…")}</div>
+        <div className="preview-channel"><User size={14} />{meta?.channel || (loading ? "" : meta ? t("Unknown channel") : "")}</div>
         {meta && meta.heights.length > 0 && (
           <div className="preview-formats">{meta.heights.slice(0, 5).map((h) => `${h}p`).join(" · ")}</div>
         )}
         {meta?.age_restricted && (
-          <div className="preview-warn"><Alert size={14} /> Age restricted — YouTube needs a signed-in session, so this can't be downloaded.</div>
+          <div className="preview-warn"><Alert size={14} /> {t("Age restricted — YouTube needs a signed-in session, so this can't be downloaded.")}</div>
         )}
       </div>
       <div className="preview-side">
-        {ready && <span className="ready"><Check size={14} /> Ready</span>}
-        {loading && <span className="ready is-loading">Checking…</span>}
-        <IconButton label="Clear link" className="icon-btn-sm" onClick={onClear}><X size={16} /></IconButton>
+        {ready && <span className="ready"><Check size={14} /> {t("Ready")}</span>}
+        {loading && <span className="ready is-loading"><span className="spinner" /> {t("Checking…")}</span>}
+        <IconButton label={t("Clear link")} className="icon-btn-sm" onClick={onClear}><X size={16} /></IconButton>
       </div>
+      {loading && <span className="preview-loadbar" aria-hidden="true" />}
     </div>
   );
 }
@@ -226,8 +234,10 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
   /** Deletes the given clips, in order. */
   onDelete: (clips: Clip[]) => void;
   onRefresh: () => void;
-  onOpenRoot: () => void;
+  /** Opens the clips folder, or the given folder (a bin's) instead. */
+  onOpenRoot: (dir?: string) => void;
 }) {
+  const { t, locale } = useI18n();
   // "Copied" shown briefly on whatever was clicked (title, channel, link).
   const [copied, setCopied] = useState<string | null>(null);
   const copy = async (key: string, text: string) => {
@@ -251,18 +261,34 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
   const enter = (m: "insert" | "delete") => { if (mode === m) leave(); else { setMode(m); setSelected(new Set()); setArmed(false); } };
   const chosen = () => picked;
   const all = clips ?? [];
+
+  // Bin filter: a clip's bin tag shows only that bin; the tag in the header
+  // (or the same tag again) shows everything. Dropped once the bin is gone.
+  const [binFilter, setBinFilter] = useState<string | null>(null);
+  useEffect(() => {
+    if (binFilter !== null && clips && !clips.some((c) => c.bin === binFilter)) setBinFilter(null);
+  }, [clips, binFilter]);
+  const shown = binFilter === null ? all : all.filter((c) => c.bin === binFilter);
+  // The bin's own folder: the parent of any of its clips' video folders.
+  const binDir = binFilter !== null && shown.length ? shown[0].folder.replace(/[\\/][^\\/]+[\\/]?$/, "") : undefined;
+
   // Only clips still in the list count: one can vanish while it's ticked.
-  const picked = all.filter((c) => selected.has(c.path));
-  const allSelected = all.length > 0 && picked.length === all.length;
+  const picked = shown.filter((c) => selected.has(c.path));
+  const allSelected = shown.length > 0 && picked.length === shown.length;
 
   return (
     <div className={`history ${selecting ? "is-selecting" : ""}`}>
       <header className="panel-head">
-        <h2>Clips</h2>
-        <span className="panel-count">{clips ? clips.length : ""}</span>
+        <h2>{t("Clips")}</h2>
+        <span className="panel-count">{clips ? shown.length : ""}</span>
+        {binFilter !== null && (
+          <button type="button" className="clip-bin bin-filter" title={t("Show all clips")} onClick={() => setBinFilter(null)}>
+            <Folder size={12} /><span>{binFilter}</span><X size={12} />
+          </button>
+        )}
         <span className="log-spacer" />
         <IconButton
-          label={mode === "insert" ? "Done selecting" : "Select clips to YEET into the timeline"}
+          label={mode === "insert" ? t("Done selecting") : t("Select clips to YEET into the timeline")}
           className={mode === "insert" ? "is-active" : ""}
           disabled={!clips || clips.length === 0 || !canInsert}
           onClick={() => enter("insert")}
@@ -270,26 +296,28 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
           <Download size={18} />
         </IconButton>
         <IconButton
-          label={mode === "delete" ? "Done selecting" : "Select clips to delete"}
+          label={mode === "delete" ? t("Done selecting") : t("Select clips to delete")}
           className={mode === "delete" ? "is-active" : ""}
           disabled={!clips || clips.length === 0}
           onClick={() => enter("delete")}
         >
           <Trash size={18} />
         </IconButton>
-        <IconButton label="Open clips folder" onClick={onOpenRoot}><Folder size={18} /></IconButton>
-        <IconButton label="Refresh" onClick={onRefresh} className={loading ? "is-spinning" : ""}><Refresh size={18} /></IconButton>
+        <IconButton label={binDir ? t("Open the {bin} folder", { bin: binFilter ?? "" }) : t("Open clips folder")} onClick={() => onOpenRoot(binDir)}>
+          <Folder size={18} />
+        </IconButton>
+        <IconButton label={t("Refresh")} onClick={onRefresh} className={loading ? "is-spinning" : ""}><Refresh size={18} /></IconButton>
       </header>
 
       {clips && clips.length === 0 && (
         <div className="empty">
           <Film size={28} />
-          <p>Your downloaded clips will appear here.</p>
+          <p>{t("Your downloaded clips will appear here.")}</p>
         </div>
       )}
 
       <div className="history-list">
-        {clips?.map((clip) => {
+        {shown.map((clip) => {
           const thumb = thumbFor(clip);
           const isSelected = selected.has(clip.path);
           return (
@@ -309,44 +337,57 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
                 <button
                   type="button"
                   className={`clip-title copyable ${copied === clip.path + ":t" ? "is-copied" : ""}`}
-                  title="Click to copy the title"
+                  title={t("Click to copy the title")}
+                  data-copied={t("copied")}
                   disabled={selecting}
                   onClick={(e) => { e.stopPropagation(); copy(clip.path + ":t", clip.title || clip.name); }}
                 >
                   {clip.title || clip.name}
                 </button>
                 <div className="clip-meta">
+                  {clip.bin && (
+                    <button
+                      type="button"
+                      className={`clip-bin ${binFilter === clip.bin ? "is-on" : ""}`}
+                      title={binFilter === clip.bin ? t("Show all clips") : t("Show only the {bin} bin", { bin: clip.bin })}
+                      disabled={selecting}
+                      onClick={(e) => { e.stopPropagation(); setBinFilter((b) => (b === clip.bin ? null : clip.bin)); }}
+                    >
+                      <Folder size={12} /><span>{clip.bin}</span>
+                    </button>
+                  )}
                   {clip.channel && (
                     <button
                       type="button"
                       className={`copyable ${copied === clip.path + ":c" ? "is-copied" : ""}`}
-                      title="Click to copy the channel"
+                      title={t("Click to copy the channel")}
+                      data-copied={t("copied")}
                       disabled={selecting}
                       onClick={(e) => { e.stopPropagation(); copy(clip.path + ":c", clip.channel); }}
                     >
                       {clip.channel}
                     </button>
                   )}
-                  <span className="clip-len">{clipLabel(clip)}</span>
+                  <span className="clip-len">{clipLabel(clip, t)}</span>
                   <span>{fmtSize(clip.size)}</span>
-                  <span>{fmtWhen(clip.mtime)}</span>
+                  <span>{fmtWhen(clip.mtime, locale)}</span>
                 </div>
               </div>
               {!selecting && (
                 <div className="clip-actions">
-                  <IconButton label="YEET into the timeline" className="clip-yeet" disabled={busy || !canInsert} onClick={() => onInsert([clip])}>
+                  <IconButton label={t("YEET into the timeline")} className="clip-yeet" disabled={busy || !canInsert} onClick={() => onInsert([clip])}>
                     <Download size={18} />
                   </IconButton>
-                  <IconButton label="Play in your video player" onClick={() => onPlay(clip)}><Play size={18} /></IconButton>
+                  <IconButton label={t("Play in your video player")} onClick={() => onPlay(clip)}><Play size={18} /></IconButton>
                   <IconButton
-                    label={clip.source ? "Copy the video's link" : "Source link unknown for this clip"}
+                    label={clip.source ? t("Copy the video's link") : t("Source link unknown for this clip")}
                     className={copied === clip.path + ":u" ? "is-copied" : ""}
                     disabled={!clip.source}
                     onClick={() => clip.source && copy(clip.path + ":u", clip.source)}
                   >
                     {copied === clip.path + ":u" ? <Check size={18} /> : <Link size={18} />}
                   </IconButton>
-                  <IconButton label="Open folder" onClick={() => onOpen(clip)}><Folder size={18} /></IconButton>
+                  <IconButton label={t("Open folder")} onClick={() => onOpen(clip)}><Folder size={18} /></IconButton>
                 </div>
               )}
               {selecting && (
@@ -361,10 +402,10 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
 
       {selecting && (
         <footer className="select-bar">
-          <button type="button" className="link-btn" onClick={() => setSelected(allSelected ? new Set() : new Set(all.map((c) => c.path)))}>
-            {allSelected ? "Select none" : "Select all"}
+          <button type="button" className="link-btn" onClick={() => setSelected(allSelected ? new Set() : new Set(shown.map((c) => c.path)))}>
+            {allSelected ? t("Select none") : t("Select all")}
           </button>
-          <span className="select-count">{picked.length} selected</span>
+          <span className="select-count">{t("{n} selected", { n: picked.length })}</span>
           <span className="log-spacer" />
           {mode === "insert" ? (
             <>
@@ -372,24 +413,24 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
                 onClick={() => { onInsert(chosen()); leave(); }}>
                 <Download size={16} /> YEET {picked.length || ""}
               </button>
-              <button type="button" className="btn btn-sm" onClick={leave}>Cancel</button>
+              <button type="button" className="btn btn-sm" onClick={leave}>{t("Cancel")}</button>
             </>
           ) : armed ? (
             <>
-              <span className="select-count bad">Delete {picked.length} clip{picked.length === 1 ? "" : "s"} from disk?</span>
+              <span className="select-count bad">{picked.length === 1 ? t("Delete 1 clip from disk?") : t("Delete {n} clips from disk?", { n: picked.length })}</span>
               <button type="button" className="btn btn-danger btn-sm" disabled={busy || queueActive}
                 onClick={() => { onDelete(chosen()); leave(); }}>
-                Delete
+                {t("Delete")}
               </button>
-              <button type="button" className="btn btn-sm" onClick={() => setArmed(false)}>Keep</button>
+              <button type="button" className="btn btn-sm" onClick={() => setArmed(false)}>{t("Keep")}</button>
             </>
           ) : (
             <>
               <button type="button" className="btn btn-danger btn-sm" disabled={picked.length === 0 || busy || queueActive} onClick={() => setArmed(true)}
-                title={queueActive ? "Wait for the queue to finish downloading" : undefined}>
-                <Trash size={16} /> Delete
+                title={queueActive ? t("Wait for the queue to finish downloading") : undefined}>
+                <Trash size={16} /> {t("Delete")}
               </button>
-              <button type="button" className="btn btn-sm" onClick={leave}>Cancel</button>
+              <button type="button" className="btn btn-sm" onClick={leave}>{t("Cancel")}</button>
             </>
           )}
         </footer>

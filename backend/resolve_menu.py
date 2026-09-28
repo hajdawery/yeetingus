@@ -105,6 +105,29 @@ def info(app_exe: str | None) -> dict:
     }
 
 
+def _ascii_path(path: str) -> str:
+    """`path`, or on Windows its short (8.3) form when it isn't ASCII and
+    the volume has short names. Unchanged when there's no ASCII form."""
+    if path.isascii() or not pp.WINDOWS:
+        return path
+    try:
+        import ctypes
+        from ctypes import wintypes
+        get = ctypes.windll.kernel32.GetShortPathNameW
+        get.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        get.restype = wintypes.DWORD
+        # The log file may not exist yet; its folder does.
+        folder, name = os.path.split(path)
+        probe = path if os.path.exists(path) else folder
+        buf = ctypes.create_unicode_buffer(1024)
+        if not get(probe, buf, len(buf)):
+            return path
+        short = buf.value if probe == path else os.path.join(buf.value, name)
+        return short
+    except Exception:  # noqa: BLE001 — no short name: the caller decides
+        return path
+
+
 def install(app_exe: str | None, log) -> str:
     """Write the launcher for `app_exe` into Resolve's Scripts/Utility.
     Returns the path written."""
@@ -130,22 +153,29 @@ def install(app_exe: str | None, log) -> str:
     app_dir = os.path.dirname(target)
     with open(src, "r", encoding="utf-8") as fh:
         text = fh.read()
+    # Windows can name a non-ASCII path in ASCII (its 8.3 short name), which
+    # is what a user called Łukasz needs: the log sits in his profile.
+    app_dir, target = _ascii_path(app_dir), _ascii_path(target)
+    log_path = _ascii_path(os.path.join(pp.app_data_dir(), "launcher.log"))
+    if not log_path.isascii():
+        log_path = ""                   # the launcher's log is best effort
     values = (
         ("@@YEET_DIR@@", app_dir),
         ("@@SHIM@@", target),           # no shim any more; the app clears the env itself
         ("@@EXE@@", target),
-        ("@@LOG@@", os.path.join(pp.app_data_dir(), "launcher.log")),
+        ("@@LOG@@", log_path),
         ("@@APP_NAME@@", APP_NAME),
         ("@@VERSION@@", __version__),
         ("@@INSTALLED_AT@@", datetime.now().strftime("%Y-%m-%d %H:%M")),
     )
-    if not all(value.isascii() for _, value in values):
+    bad = next((value for _, value in values if not value.isascii()), None)
+    if bad is not None:
         # Written as ASCII (below), a path like C:\Users\Łukasz would turn
         # into C:\Users\?ukasz and the menu entry would silently do nothing.
         # The values, not the rendered text: the template is ours to keep ASCII.
         raise ResolveMenuError(
-            "the app's path has non-ASCII characters, which Resolve's Lua can't "
-            f"be given reliably: {target}. Install YEETingus to a plain-ASCII folder.")
+            "this path has non-ASCII characters, which Resolve's Lua can't be given "
+            f"reliably: {bad}. Install YEETingus to a plain-ASCII folder.")
     for token, value in values:
         text = text.replace(token, value)
     leftover = re.findall(r"@@[A-Z_]+@@", text)

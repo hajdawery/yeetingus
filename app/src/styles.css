@@ -174,6 +174,18 @@ img { display: block; }
 .field-icon { position: absolute; left: 12px; top: 0; bottom: 0; display: flex; align-items: center; color: var(--muted); pointer-events: none; }
 .field input::placeholder { color: var(--muted); }
 .field input:disabled { opacity: .55; }
+.field.has-clear input { padding-right: 36px; }
+/* The right column's preview, queue and clips, kept mounted while the log
+   shows (see App.tsx); laid out as if the wrapper weren't there. */
+.right-main { display: contents; }
+.right-main[hidden] { display: none; }
+.field-clear {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
+  transition: color .12s, background .12s;
+}
+.field-clear:hover { color: var(--text); background: var(--surface-2); }
 
 .select { width: 100%; padding: 0 34px 0 12px; cursor: pointer; text-align: left; color: var(--text); }
 .select.has-icon { padding-left: 40px; }
@@ -372,7 +384,21 @@ img { display: block; }
 .clip-text { flex: 1; min-width: 0; }
 .clip-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .clip-meta { display: flex; flex-wrap: wrap; gap: 2px 9px; color: var(--muted); font-size: 12px; margin-top: 2px; }
-.clip-meta > :first-child { color: var(--text); opacity: .75; }
+.clip-meta > :first-child:not(.clip-bin), .clip-meta > .clip-bin + * { color: var(--text); opacity: .75; }
+.clip-bin {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%;
+  padding: 0 6px; border-radius: 4px; line-height: 17px;
+  background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.clip-bin svg { flex: none; color: var(--muted); }
+.clip-bin > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+button.clip-bin { font: inherit; cursor: pointer; transition: border-color .12s, background .12s; }
+button.clip-bin:hover:not(:disabled), .clip-bin.is-on { border-color: var(--accent); }
+.is-selecting .clip-bin { pointer-events: none; }
+/* The active bin filter, next to the Clips count. */
+.bin-filter { font-size: 12px; background: var(--accent-soft); border-color: var(--accent); }
+.bin-filter:hover svg:last-child { color: var(--text); }
 
 /* Title and channel are buttons that copy themselves; they look like text. */
 .copyable {
@@ -383,7 +409,7 @@ img { display: block; }
 .copyable:hover { color: var(--accent); }
 .copyable.is-copied { color: var(--ok); }
 .copyable.is-copied::after {
-  content: "copied"; margin-left: 8px; font-size: 11px; font-weight: 600;
+  content: attr(data-copied); margin-left: 8px; font-size: 11px; font-weight: 600;
   color: var(--ok); animation: pop .3s ease-out;
 }
 .clip-meta .copyable { display: inline; }
@@ -509,6 +535,27 @@ img { display: block; }
   animation: pop .35s cubic-bezier(.2,.8,.3,1.4);
 }
 .ready.is-loading { color: var(--muted); background: var(--surface-2); border-color: var(--border); animation: none; }
+
+/* Looking a link up: a spinner in the badge, a shimmering thumbnail slot and
+   a bar sliding along the card's bottom edge. */
+.spinner {
+  flex: none; width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid currentColor; border-right-color: transparent;
+  animation: spin .7s linear infinite;
+}
+.preview { position: relative; overflow: hidden; }
+.preview-loadbar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; overflow: hidden; }
+.preview-loadbar::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+  border-radius: 2px; background: var(--accent);
+  animation: loadbar 1.2s cubic-bezier(.45, 0, .25, 1) infinite;
+}
+@keyframes loadbar { to { left: 100%; } }
+.preview-thumb.is-loading {
+  background: linear-gradient(90deg, var(--input) 25%, var(--surface-2) 50%, var(--input) 75%);
+  background-size: 200% 100%; animation: shimmer 1.4s linear infinite;
+}
+.preview-thumb.is-loading .thumb-placeholder { visibility: hidden; }
 
 /* On a light theme the yellow needs a darker hover, not a lighter one. */
 :root[data-theme="light"] .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }

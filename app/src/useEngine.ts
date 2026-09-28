@@ -68,6 +68,9 @@ export function useEngine(): Engine {
           case "state":
             // Snapshot after the replay — the single source of truth.
             setState(stripEvent(ev));
+            // Missed tool_busy events (a dropped stream) would otherwise
+            // leave an install button stuck, or a running one looking idle.
+            if (ev.tool_busy) setToolBusy({ ...ev.tool_busy });
             setConnected(true);
             setError(null);
             break;

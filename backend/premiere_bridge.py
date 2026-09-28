@@ -85,6 +85,11 @@ class PremiereBridge:
             return self.poll(wait)
         return cmd
 
+    def requeue(self, cmd: dict) -> None:
+        """Put back a command whose poll couldn't be answered."""
+        if cmd.get("id") in self._pending:
+            self._commands.put(cmd)
+
     def reply(self, message: dict) -> bool:
         self._touch()
         rid = str(message.get("id", ""))
@@ -146,14 +151,18 @@ class PremiereBridge:
         """Project and sequence names from the panel — quick, for the pill."""
         return self.request("status", timeout=10.0)
 
-    def insert(self, path: str, insert_at: str = "playhead", has_video: bool = True) -> dict:
+    def insert(self, path: str, insert_at: str = "playhead", has_video: bool = True,
+               bin_name: str = "") -> dict:
         """Import `path` and place it on the active sequence.
 
         `has_video` lets the panel tell a stale audio-only project item from
-        a genuinely audio-only file. Returns what the panel reports:
-        {clipName, sequence, insertedFrame, trackIndex}.
+        a genuinely audio-only file. `bin_name` asks for a new import to go in
+        the project bin of that name (an older panel ignores it).
+        Returns what the panel reports: {clipName, sequence, insertedFrame,
+        trackIndex, bin}.
         """
-        return self.request("insert", {"path": path, "at": insert_at, "hasVideo": has_video})
+        return self.request("insert", {"path": path, "at": insert_at, "hasVideo": has_video,
+                                       "bin": bin_name})
 
 
 # --------------------------------------------------------------------------- #

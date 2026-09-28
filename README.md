@@ -8,7 +8,7 @@
 
 For DaVinci Resolve and Premiere Pro.
 
-![version](https://img.shields.io/badge/version-2.1.0-fcca74?style=flat-square&labelColor=1a1a1a)
+![version](https://img.shields.io/badge/version-2.1.1-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
 ![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![premiere](https://img.shields.io/badge/Premiere%20Pro-25%2B-9999ff?style=flat-square&labelColor=1a1a1a)
@@ -33,6 +33,7 @@ YEETingus does that in one go. It downloads only the part you asked for, convert
 - Type `90`, `1:30` or `00:01:30`. Or hit `15s`, `30s`, `60s`, `Whole`, or drag the slider.
 - Paste a link with `?t=` in it and the in point fills itself.
 - Age-restricted video? The preview tells you before you waste a download.
+- Working on one video? Type a **Bin** name (say `Friday video`, or hit **Today** for today's date) and everything you grab lands in its own folder until you change it, and in a bin of the same name in your editor's Media Pool or project.
 
 **Queue**
 - Flip the **Queue** switch and the YEET button becomes **Add to queue**. Paste a link, add it, paste the next one.
@@ -51,10 +52,13 @@ YEETingus does that in one go. It downloads only the part you asked for, convert
 - Every download becomes an editing intermediate with a keyframe every half second. That's why scrubbing feels instant. Your GPU does the encoding (AV1 for Resolve, HEVC for Premiere), the CPU if you have no encoder.
 
 **History**
-- Everything you've ever clipped, newest first, with thumbnail, title, channel, length, size, date.
+- Everything you've ever clipped, newest first, with thumbnail, title, bin, channel, length, size, date.
 - Per clip: YEET it again, play it, copy the link, open its folder.
 - Bulk insert and bulk delete with checkboxes: tick several clips and YEET them into the timeline in order, or remove them from disk.
-- Click a title or channel to copy it.
+- Click a title or channel to copy it. Click a bin to show only that bin's clips.
+
+**Language**
+- English or Polish (Settings → Language, or Auto to follow your system).
 
 `FEATURES.md` has the long version.
 
@@ -171,7 +175,7 @@ Drag YEETingus into Applications before you add the Resolve menu entry in Settin
 
 ## 📁 Where clips go
 
-Your Videos folder, in a `YEETingus` subfolder, one folder per video. Change it in Settings. Existing clips stay where they are, because your timelines point at them.
+Your Videos folder, in a `YEETingus` subfolder, one folder per video. Fill in the **Bin** field and they go one level deeper, in `YEETingus/<bin>/`. Change the clips folder in Settings. Existing clips stay where they are, because your timelines point at them.
 
 ---
 

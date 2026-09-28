@@ -53,6 +53,8 @@ EDITORS = ("resolve", "premiere")
 # keys of resolve_bridge.RETIME_PROCESSES.
 RETIMES = ("project", "nearest", "blend", "optical")
 CONFORMS = ("sharp", "blend", "off")
+# The window's language; "auto" follows the system. Only the front end uses it.
+LANGUAGES = ("auto", "en", "pl")
 
 DEFAULTS: dict = {
     "download_dir": default_download_dir(),
@@ -71,6 +73,10 @@ DEFAULTS: dict = {
     "conform": "sharp",
     # Ask GitHub now and then whether a newer release is out (see updates.py).
     "check_updates": True,
+    # The last bin typed into the form: a subfolder of the clips folder that
+    # downloads go into, e.g. one per video project. Empty = no bin.
+    "bin": "",
+    "language": "auto",
 }
 
 # Older versions wrote a re-encode setting that no longer exists. load()
@@ -113,6 +119,8 @@ def load() -> dict:
         cfg["retime"] = DEFAULTS["retime"]
     if cfg.get("conform") not in CONFORMS:
         cfg["conform"] = DEFAULTS["conform"]
+    if cfg.get("language") not in LANGUAGES:
+        cfg["language"] = DEFAULTS["language"]
 
     # Upgrade anyone still pointing at the old %TEMP% location, which the OS is
     # entitled to delete. Existing clips are NOT moved: timelines reference them

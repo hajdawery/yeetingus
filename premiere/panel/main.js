@@ -22,7 +22,6 @@ const dot = document.getElementById("dot");
 const state = document.getElementById("connection");
 const log = document.getElementById("log");
 
-let base = null;               // "http://127.0.0.1:<port>" once found
 let lastTried = "";
 let portIndex = 0;
 let generation = 0;            // bumps on Reconnect so an old loop stops
@@ -42,7 +41,7 @@ function serialize(work) {
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function post(path, body) {
+async function post(base, path, body) {
   const res = await fetch(base + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -54,7 +53,7 @@ async function post(path, body) {
 
 // One attempt to find a service: say hello on the next port in the list.
 // Keep in step with manifest.json and backend/version.py.
-const PANEL_VERSION = "2.1.0";
+const PANEL_VERSION = "2.1.1";
 
 async function dial() {
   const port = PORTS[Math.floor(portIndex / HOSTS.length)];
@@ -70,8 +69,7 @@ async function dial() {
   });
   if (!res.ok) throw new Error("port " + port + " answered " + res.status);
   const info = await res.json();
-  base = candidate;
-  return info;
+  return { info, base: candidate };
 }
 
 async function run(cmd) {
@@ -84,20 +82,27 @@ async function run(cmd) {
 }
 
 // The loop: find a service, then poll it until it goes away, then start over.
+// Each loop keeps its own connection, and one replaced by Reconnect stops
+// touching the shared status as soon as it wakes: its fetch can't be
+// cancelled, and it used to clear the connection the new loop was using.
 async function loop(myGeneration) {
+  const current = () => myGeneration === generation;
   status("Looking for YEETingus…", false);
-  while (myGeneration === generation) {
-    let info;
-    try { info = await dial(); }
+  while (current()) {
+    let found;
+    try { found = await dial(); }
     catch (error) {
+      if (!current()) return;
       status("Waiting for YEETingus…", false);
       say("No YEETingus at " + lastTried + " (" + (error && error.message ? error.message : error) + ")");
       await sleep(RETRY_MS); continue;
     }
-    status("Connected to YEETingus " + (info.version || ""), true);
+    if (!current()) return;
+    const base = found.base;
+    status("Connected to YEETingus " + (found.info.version || ""), true);
     say("Connected on " + base + ".");
 
-    while (myGeneration === generation) {
+    while (current()) {
       let reply;
       try {
         const res = await fetch(base + "/api/premiere/poll?wait=" + POLL_WAIT);
@@ -107,11 +112,12 @@ async function loop(myGeneration) {
         break;                 // service gone; dial again
       }
       if (!reply.cmd) continue;   // quiet 25 s; poll again
+      // Run and answered even by a replaced loop: the service is waiting.
       const answer = await run(reply.cmd);
-      say(answer.error ? "✗ " + answer.error.message : answer.result);
-      try { await post("/api/premiere/reply", answer); } catch (_) { break; }
+      if (current()) say(answer.error ? "✗ " + answer.error.message : answer.result);
+      try { await post(base, "/api/premiere/reply", answer); } catch (_) { break; }
     }
-    base = null;
+    if (!current()) return;
     status("Waiting for YEETingus…", false);
     // A port that answered is the one to keep dialling first.
     portIndex = (portIndex + PORTS.length * HOSTS.length - 1) % (PORTS.length * HOSTS.length);
@@ -133,7 +139,6 @@ function followTheme() {
 
 document.getElementById("connect").addEventListener("click", () => {
   generation += 1;
-  base = null;
   loop(generation);
 });
 // LAUNCHING THE APP FROM HERE. A UXP panel can't start a process, but it can

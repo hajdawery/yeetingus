@@ -331,6 +331,15 @@ def _download(url: str, dest: str, log: ProgressCB) -> None:
             elif done % (8 * 1048576) < 262144:
                 log(f"  {done // 1048576} MB…")
 
+    # A dropped connection ends the reads early without an error; installed
+    # anyway, a truncated tool was found and used on every launch after.
+    if total and done != total:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise OSError(f"download of {os.path.basename(dest)} was cut short "
+                      f"({done} of {total} bytes)")
     os.replace(tmp, dest)
     log(f"  saved to {dest}")
 
@@ -500,8 +509,12 @@ def ensure_ffmpeg(log: ProgressCB) -> str:
         for member in zf.namelist():
             name = os.path.basename(member)
             if name in wanted:
-                with zf.open(member) as src, open(os.path.join(bin_dir(), name), "wb") as dst:
+                # Via .part: cut off mid-copy (the app closed), the real name
+                # would hold half a program that's then found and trusted.
+                final = os.path.join(bin_dir(), name)
+                with zf.open(member) as src, open(final + ".part", "wb") as dst:
                     shutil.copyfileobj(src, dst)
+                os.replace(final + ".part", final)
                 log(f"  extracted {name}")
     try:
         os.remove(zip_path)
@@ -618,8 +631,9 @@ def ensure_deno(log: ProgressCB) -> str:
             if os.path.basename(member) != wanted:
                 continue
             dest = os.path.join(bin_dir(), wanted)
-            with zf.open(member) as src, open(dest, "wb") as dst:
+            with zf.open(member) as src, open(dest + ".part", "wb") as dst:
                 shutil.copyfileobj(src, dst)
+            os.replace(dest + ".part", dest)
             extracted = dest
             break
     try:

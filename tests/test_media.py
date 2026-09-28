@@ -293,9 +293,32 @@ class Capabilities(unittest.TestCase):
         # No AV1 encoder is even tried on macOS; VideoToolbox HEVC is, for Premiere.
         with mock.patch.object(media, "_try_encoder", return_value=True) as enc:
             caps = media.probe_capabilities(FF, platform="darwin")
-        self.assertEqual([c.args[1] for c in enc.call_args_list], ["hevc_videotoolbox"])
+        # Twice: once to find it, once to see whether it takes -q:v.
+        self.assertEqual([c.args[1] for c in enc.call_args_list],
+                         ["hevc_videotoolbox", "hevc_videotoolbox"])
         self.assertIsNone(caps.av1_encoder)
         self.assertEqual(caps.hevc_encoder, "hevc_videotoolbox")
+        self.assertTrue(caps.vt_qscale)
+
+    def test_videotoolbox_without_qscale_gets_a_bitrate(self):
+        # An Intel (or Rosetta) ffmpeg refuses -q:v for VideoToolbox.
+        with mock.patch.object(media, "_try_encoder",
+                               side_effect=lambda ff, enc, extra=(): not extra):
+            caps = media.probe_capabilities(FF, platform="darwin")
+        self.assertFalse(caps.vt_qscale)
+        p = media.plan(src(vcodec="av1"), caps, editor="premiere")
+        self.assertNotIn("-q:v", p.video_args)
+        self.assertIn("-b:v", p.video_args)
+
+    def test_conform_rewrites_only_the_gop(self):
+        # A 6 fps source has a GOP of 3; conforming to 24 fps makes it 12,
+        # which must not touch the MPEG-4 quality (-q:v) that happens to be 3.
+        from fractions import Fraction
+        p = media.plan(src(vcodec="vp9", fps=Fraction(6)), media.Capabilities(),
+                       target_fps=Fraction(24))
+        args = p.video_args
+        self.assertEqual(args[args.index("-q:v") + 1], media.MPEG4_QSCALE)
+        self.assertEqual(args[args.index("-g") + 1], str(p.gop))
 
     def test_premiere_gets_hevc_not_av1(self):
         caps = media.Capabilities(av1_encoder="av1_nvenc", hevc_encoder="hevc_nvenc")

@@ -23,7 +23,7 @@ Routes (all JSON; POST bodies are JSON objects):
                                      ?since (or Last-Event-ID) first replays the
                                      log history after that point
     POST /api/jobs                   {url, in, out, quality|max_height,
-                                      insert_at, insert} -> {started}
+                                      insert_at, insert, bin?} -> {started}
     POST /api/jobs/cancel            -> {cancelled}
     POST /api/meta                   {url} -> video metadata (blocks; 409 while
                                      a job is running)
@@ -32,7 +32,7 @@ Routes (all JSON; POST bodies are JSON objects):
     POST /api/tools/update-ytdlp     -> {started}
     POST /api/tools/install-ffmpeg   -> {started}
     POST /api/tools/install-js       -> {started}
-    POST /api/settings               {download_dir?, default_length?, editor?} -> settings
+    POST /api/settings               {download_dir?, default_length?, editor?, bin?, …} -> settings
     POST /api/log                    {text, tag?} -> a line in the shared log,
                                      for things the front end itself did
     POST /api/open-folder            opens the clips folder in the file manager
@@ -50,7 +50,7 @@ know a per-launch token. A browser page always sends an http(s) Origin and is
 still refused. Same reasoning as Sherlock's bridge.
     GET  /api/clips                  {clips: [...]} every finished clip on disk
     POST /api/update/check           -> {started}   look for a newer release now
-    POST /api/queue                  {url, in, out, quality, title?, thumbnail?} -> {item}
+    POST /api/queue                  {url, in, out, quality, title?, thumbnail?, bin?} -> {item}
     POST /api/queue/remove           {id} -> {removed}   stops it if running
     POST /api/queue/clear            drops finished/failed/stopped items
     POST /api/clips/insert           {path | paths, insert_at} -> {started}
@@ -127,6 +127,15 @@ def open_folder(path: str) -> None:
 
 # What the Premiere panel calls. UXP sends no Origin and can't be handed the
 # token, so these three (and only these) are let through without it.
+def _same(given: str, token: str) -> bool:
+    """Constant-time compare that treats a non-ASCII value as simply wrong
+    (compare_digest raises on one, which was a 500 instead of a 401)."""
+    try:
+        return hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
+    except (TypeError, AttributeError):
+        return False
+
+
 PANEL_ROUTES = frozenset({"/api/premiere/hello", "/api/premiere/poll", "/api/premiere/reply"})
 
 
@@ -187,17 +196,30 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return origin is None or origin.startswith("file://")
 
+    def _loopback_host(self) -> bool:
+        """Whether the request was addressed to this machine by a loopback
+        name. A web page that re-points its own domain at 127.0.0.1 (DNS
+        rebinding) sends its own domain here, and is turned away."""
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):
+            name = host[1:].split("]", 1)[0]
+        else:
+            name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        return name in ("127.0.0.1", "localhost", "::1", "")
+
     def _authorised(self, query: dict, path: str = "") -> bool:
+        if not self._loopback_host():
+            return False
         token = self.server.token
         if not token:
             return True
         if path in PANEL_ROUTES and self._native_origin():
             return True
         header = self.headers.get("Authorization") or ""
-        if header.startswith("Bearer ") and hmac.compare_digest(header[7:].strip(), token):
+        if header.startswith("Bearer ") and _same(header[7:].strip(), token):
             return True
         given = query.get("token", [None])[0]
-        return given is not None and hmac.compare_digest(given, token)
+        return given is not None and _same(given, token)
 
     def do_OPTIONS(self) -> None:  # noqa: N802 — http.server's naming
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -303,18 +325,19 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if "max_height" in body:
             max_height = body["max_height"]
-            if max_height is not None and not isinstance(max_height, int):
+            if max_height is not None and type(max_height) is not int:
                 raise ApiError(400, "max_height must be an integer or null")
         else:
             label = body.get("quality", "Best available")
-            if label not in QUALITY_OPTIONS:
+            if not isinstance(label, str) or label not in QUALITY_OPTIONS:
                 raise ApiError(400, f"unknown quality '{label}'")
             max_height = QUALITY_OPTIONS[label]
         started = self.engine.start_job(
             str(body.get("url", "")),
             str(body.get("in", "00:00")), str(body.get("out", "00:00")),
             max_height, str(body.get("insert_at", "playhead")),
-            insert=bool(body.get("insert", True)))
+            insert=bool(body.get("insert", True)),
+            bin_name=str(body.get("bin") or ""))
         # A refusal has already been logged (and streamed) by the engine; the
         # status code just says so without the client parsing the log.
         self._send_json({"started": started}, 200 if started else 409)
@@ -325,14 +348,15 @@ class Handler(BaseHTTPRequestHandler):
     def r_queue_add(self, _q) -> None:
         body = self._read_json()
         label = body.get("quality", "Best available")
-        if label not in QUALITY_OPTIONS:
+        if not isinstance(label, str) or label not in QUALITY_OPTIONS:
             raise ApiError(400, f"unknown quality '{label}'")
         thumb = body.get("thumbnail")
         item = self.engine.queue_add(
             str(body.get("url", "")),
             str(body.get("in", "00:00")), str(body.get("out", "00:00")),
             QUALITY_OPTIONS[label], str(body.get("title") or ""),
-            thumb if isinstance(thumb, str) else None)
+            thumb if isinstance(thumb, str) else None,
+            bin_name=str(body.get("bin") or ""))
         self._send_json({"item": item}, 200 if item else 409)
 
     def r_queue_remove(self, _q) -> None:
@@ -358,6 +382,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.engine.busy:
             raise ApiError(409, "a job is running")
         self._send_json(self.engine.probe_metadata(url, quiet=True))
+        # (quiet: the lookup keeps its process to itself and ignores the
+        # main job's STOP flag — see Engine.probe_metadata.)
 
     def r_resolve(self, _q) -> None:
         self._send_json({"status": self.engine.resolve_state,
@@ -387,7 +413,9 @@ class Handler(BaseHTTPRequestHandler):
                 onboarded=body.get("onboarded"),
                 retime=body.get("retime"),
                 conform=body.get("conform"),
-                check_updates=body.get("check_updates"))
+                check_updates=body.get("check_updates"),
+                bin_name=body.get("bin"),
+                language=body.get("language"))
         except ValueError as e:
             raise ApiError(400, str(e))
         except OSError as e:
@@ -493,13 +521,23 @@ class Handler(BaseHTTPRequestHandler):
             wait = float(q.get("wait", ["25"])[0])
         except ValueError:
             wait = 25.0
-        self._send_json({"cmd": self.engine.premiere.poll(wait)})
+        cmd = self.engine.premiere.poll(wait)
+        try:
+            self._send_json({"cmd": cmd})
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # The panel that asked is gone (reloaded, closed). The next poll,
+            # from whichever panel is there now, gets it instead of it being
+            # lost and the insert timing out two minutes later.
+            if cmd is not None:
+                self.engine.premiere.requeue(cmd)
+            raise
 
     def r_premiere_reply(self, _q) -> None:
         self._send_json({"ok": self.engine.premiere.reply(self._read_json())})
 
     def r_quit(self, _q) -> None:
         self._send_json({"stopping": True})
+        self.engine.shutdown()
         self.server.stop_soon()
 
     ROUTES = {
@@ -692,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"port": port, "info": info}), flush=True)
 
     if args.parent_pid:
-        watch_parent(args.parent_pid, server.stop_soon)
+        watch_parent(args.parent_pid, lambda: (engine.shutdown(), server.stop_soon()))
     if not args.no_boot:
         engine.start_boot()
     try:
@@ -700,6 +738,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        engine.shutdown()
         server.stopping = True
         server.server_close()
         if twin is not None:

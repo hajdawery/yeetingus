@@ -42,7 +42,9 @@ export function secondsToTimestamp(total: number): string {
 
 // YouTube's "start at" parameter, in all the shapes it appears in the wild:
 //   ?t=169   &t=169s   &t=2m49s   &t=1h2m3s   ?start=169   #t=90
-const T_PARAM = /[?&#](?:t|start|time_continue)=([0-9hms]+)/i;
+// The whole value, up to the next parameter: a tracking token like "t=7kLm…"
+// (X share links) must not read as seven seconds.
+const T_PARAM = /[?&#](?:t|start|time_continue)=([0-9hms]+)(?=$|[&#])/i;
 const HMS = /(\d+)\s*([hms]?)/gi;   // a bare trailing number is seconds ("1m30")
 
 /** Seconds from a share link's timestamp, or null if it has none. */

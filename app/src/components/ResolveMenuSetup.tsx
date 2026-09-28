@@ -1,23 +1,25 @@
 import type { Api, EngineState } from "../api";
+import { useI18n } from "../i18n";
 import { Button } from "./ui";
 
 /** The "add YEETingus to Resolve's Scripts menu" block, used by Settings and the first run. */
 export function ResolveMenuSetup({ api, state, toolBusy }: {
   api: Api; state: EngineState; toolBusy: Record<string, boolean>;
 }) {
+  const { t, tr } = useI18n();
   const m = state.resolve_menu;
   const busy = Boolean(toolBusy.resolve_menu);
-  const label = busy ? "Adding…" : m.installed ? (m.stale ? "Update the Resolve menu entry" : "Re-add to Resolve's Scripts menu") : "Add to Resolve's Scripts menu";
+  const label = busy ? t("Adding…") : m.installed ? (m.stale ? t("Update the Resolve menu entry") : t("Re-add to Resolve's Scripts menu")) : t("Add to Resolve's Scripts menu");
   return (
     <div className="stack">
       <dl className="tools">
-        <dt>Menu</dt>
+        <dt>{t("Menu")}</dt>
         <dd className={m.installed && !m.stale ? "" : "bad"}>
           {!m.resolve_found
-            ? "Resolve's Scripts folder not found — is Resolve installed for this user?"
+            ? t("Resolve's Scripts folder not found — is Resolve installed for this user?")
             : m.installed
-              ? m.stale ? "entry points at another YEETingus — update it" : "in Workspace → Scripts → Utility"
-              : "not in Resolve's menu yet"}
+              ? m.stale ? t("entry points at another YEETingus — update it") : t("in Workspace → Scripts → Utility")
+              : t("not in Resolve's menu yet")}
         </dd>
       </dl>
       <Button block onClick={() => api.installResolveMenu()} disabled={busy || state.busy || !m.app_exe}>
@@ -25,10 +27,10 @@ export function ResolveMenuSetup({ api, state, toolBusy }: {
       </Button>
       {m.last_install && (
         <p className={`install-result ${m.last_install.startsWith("ok") ? "ok" : "bad"}`}>
-          {m.last_install.replace(/^(ok|error): /, "")}
+          {tr(m.last_install.replace(/^(ok|error): /, ""))}
         </p>
       )}
-      <p className="hint">Optional — it just launches YEETingus from inside Resolve. Resolve reads its menu at startup, so restart it afterwards.</p>
+      <p className="hint">{t("Optional — it just launches YEETingus from inside Resolve. Resolve reads its menu at startup, so restart it afterwards.")}</p>
     </div>
   );
 }

@@ -65,11 +65,32 @@ function createAdapter(ppro, version = "") {
     return false;
   }
 
+  // The top-level bin called `name`, made if missing. Null if Premiere won't
+  // make it, and the clip goes in the root bin as before.
+  async function binFor(project, name) {
+    const root = await project.getRootItem();
+    const find = async () => {
+      for (const item of await root.getItems())
+        if (item.type === ppro.ProjectItem.TYPE_BIN && item.name === name) return ppro.FolderItem.cast(item);
+      return null;
+    };
+    try {
+      const found = await find();
+      if (found) return found;
+      transact(project, "YEETingus: create bin", c => c.addAction(root.createBinAction(name, false)));
+      return await find();
+    } catch (_) {
+      return null;
+    }
+  }
+
   // The project item for a media file: an existing one if the file is already
-  // in the project, else imported into the root bin. An existing item that is
-  // audio-only while the file has video is stale (see lacksVideo) and is not
-  // reused: the file is imported again and the new item taken.
-  async function itemFor(project, path, hasVideo) {
+  // in the project (wherever it is), else imported into the bin called
+  // `binName` or the root bin. An existing item that is audio-only while the
+  // file has video is stale (see lacksVideo) and is not reused: the file is
+  // imported again and the new item taken. `bin` is the bin it was imported
+  // into, if any.
+  async function itemFor(project, path, hasVideo, binName) {
     const wanted = normalizePath(path);
     const findAll = async () => {
       const found = [];
@@ -84,9 +105,10 @@ function createAdapter(ppro, version = "") {
     const before = await findAll();
     for (const { item, clip } of before) {
       if (hasVideo && await lacksVideo(item)) continue;
-      return item;
+      return { item, bin: null };
     }
-    if (!await project.importFiles([path], true, await project.getRootItem(), false))
+    const bin = binName ? await binFor(project, binName) : null;
+    if (!await project.importFiles([path], true, bin || await project.getRootItem(), false))
       fail("MissingMedia", "Premiere could not import: " + path);
     const seen = new Set(before.map(b => b.item.getId ? b.item.getId() : b.item.name));
     const after = await findAll();
@@ -94,7 +116,7 @@ function createAdapter(ppro, version = "") {
     if (!fresh) fail("PremiereError", "The imported clip could not be found in the project.");
     if (hasVideo && await lacksVideo(fresh.item))
       fail("MissingMedia", "Premiere imported the clip without video — it can't decode this file.");
-    return fresh.item;
+    return { item: fresh.item, bin: bin ? binName : null };
   }
 
   async function tracks(sequence, audio) {
@@ -114,12 +136,14 @@ function createAdapter(ppro, version = "") {
     return result;
   }
 
-  // insert({path, at}) — at: "playhead" | "start"
+  // insert({path, at, hasVideo, bin}) — at: "playhead" | "start"; bin: a
+  // project bin for a new import ("" = the root bin)
   async function insert(params) {
     if (typeof params.path !== "string" || !params.path.trim()) fail("InvalidRange", "No file to insert.");
     if (!["playhead", "start"].includes(params.at)) fail("InvalidRange", "Unknown destination position.");
     const { project, sequence } = await context();
-    const item = await itemFor(project, params.path, params.hasVideo !== false);
+    const binName = typeof params.bin === "string" ? params.bin.trim() : "";
+    const { item, bin } = await itemFor(project, params.path, params.hasVideo !== false, binName);
     const clip = ppro.ClipProjectItem.cast(item);
     if (await clip.isOffline()) fail("MissingMedia", "The clip is offline in Premiere: " + params.path);
 
@@ -145,7 +169,8 @@ function createAdapter(ppro, version = "") {
     });
 
     return { clipName: item.name, sequence: sequence.name, insertedFrame: recordFrame,
-      trackIndex: videoIndex + 1, audioTrackIndex: audioIndex + 1, usedNewTrack, fps };
+      trackIndex: videoIndex + 1, audioTrackIndex: audioIndex + 1, usedNewTrack, fps,
+      bin };
   }
 
   // probe({path}) — what Premiere holds for a file; for diagnosing imports.
