@@ -51,7 +51,7 @@ export function Onboarding({ api, state, toolBusy, onDone, onLog, language, onLa
             <div className="choice-row">
               <button type="button" className="choice" onClick={() => choose("resolve")}>
                 <span className="choice-title">DaVinci Resolve</span>
-                <span className="choice-sub">{t("Studio · talks to Resolve directly")}</span>
+                <span className="choice-sub">{t("Studio or Free · straight onto your timeline")}</span>
               </button>
               <button type="button" className="choice" onClick={() => choose("premiere")}>
                 <span className="choice-title">Premiere Pro</span>
@@ -76,17 +76,17 @@ export function Onboarding({ api, state, toolBusy, onDone, onLog, language, onLa
           <>
             <header className="onboarding-head">
               <h2>DaVinci Resolve</h2>
-              <p>{t("YEETingus talks to Resolve through its scripting API. Two things to know:")}</p>
+              <p>{t("YEETingus puts clips on Resolve's timeline itself. How depends on your version:")}</p>
             </header>
             <ol className="steps">
               <li>
-                <Rich text={t("<b>It needs Resolve Studio.</b> External scripting — a program outside Resolve putting clips on your timeline — is a Studio feature. On the free version, <b>Download only</b> still works; you drag the file in yourself.")} />
+                <Rich text={t("<b>Studio:</b> turn external scripting on, once: <code>Preferences → System → General → External scripting using → Local</code>.")} />
               </li>
               <li>
-                <Rich text={t("<b>Turn external scripting on</b>, once: <code>Preferences → System → General → External scripting using → Local</code>.")} />
+                <Rich text={t("<b>Free:</b> there's no external scripting, so YEETingus runs a small bridge inside Resolve. Add the menu entry below and restart Resolve. Then, each time you open Resolve, start YEETingus and click <code>Workspace → Scripts → YEETingus</code>.")} />
               </li>
               <li>
-                <Rich text={t("<b>Optional:</b> a YEETingus entry in Resolve's Scripts menu, so you can open it from inside Resolve.")} />
+                <Rich text={t("<b>The Scripts menu entry.</b> Free needs it. On Studio it's optional: it opens YEETingus from inside Resolve.")} />
                 <ResolveMenuSetup api={api} state={state} toolBusy={toolBusy} />
               </li>
             </ol>

@@ -18,7 +18,7 @@ export function ResolveMenuSetup({ api, state, toolBusy }: {
           {!m.resolve_found
             ? t("Resolve's Scripts folder not found — is Resolve installed for this user?")
             : m.installed
-              ? m.stale ? t("entry points at another YEETingus — update it") : t("in Workspace → Scripts → Utility")
+              ? m.stale ? t("entry is out of date — update it") : t("in Workspace → Scripts → Utility")
               : t("not in Resolve's menu yet")}
         </dd>
       </dl>
@@ -30,7 +30,7 @@ export function ResolveMenuSetup({ api, state, toolBusy }: {
           {tr(m.last_install.replace(/^(ok|error): /, ""))}
         </p>
       )}
-      <p className="hint">{t("Optional — it just launches YEETingus from inside Resolve. Resolve reads its menu at startup, so restart it afterwards.")}</p>
+      <p className="hint">{t("Needed on Resolve Free: clicking it starts the bridge that inserts your clips. On Studio it just opens YEETingus. Resolve reads its menu at startup, so restart it afterwards.")}</p>
     </div>
   );
 }

@@ -2,10 +2,11 @@
  * Polish. Keys are the English phrases exactly as the code writes them (see
  * i18n.tsx); a missing key just shows the English.
  *
- * Terms: timeline = oś czasu, playhead = głowica, bin = pojemnik (as in
- * Premiere's Polish UI), log = dziennik. Menu paths inside Resolve and
- * Premiere stay in English: Resolve has no Polish UI, and most Premiere
- * installs here run in English too.
+ * Editing jargon stays in English, the way Polish editors say it: timeline
+ * (na timeline, timeline’u, na timelinie), playhead, bin (binu), and the
+ * Sharp / Blend / Optical Flow modes. log = dziennik. Menu paths inside
+ * Resolve and Premiere stay in English too: Resolve has no Polish UI, and
+ * most Premiere installs here run in English.
  */
 
 export const PL: Record<string, string> = {
@@ -17,7 +18,7 @@ export const PL: Record<string, string> = {
   "Quality": "Jakość",
   "Best available": "Najlepsza dostępna",
   "Insert at": "Wstaw na",
-  "Playhead": "Głowica",
+  "Playhead": "Playhead",
   "Start": "Początek",
   "Idle": "Gotowy",
   "Getting tools ready…": "Przygotowuję narzędzia…",
@@ -28,8 +29,8 @@ export const PL: Record<string, string> = {
   "Connect Premiere (open the YEETingus panel) first — or use Download only":
     "Najpierw połącz Premiere (otwórz panel YEETingus) — albo użyj „Tylko pobierz”",
   "Connect Resolve (open a project and timeline) first — or use Download only":
-    "Najpierw połącz Resolve (otwórz projekt i oś czasu) — albo użyj „Tylko pobierz”",
-  "YEET into timeline": "YEET na oś czasu",
+    "Najpierw połącz Resolve (otwórz projekt i timeline) — albo użyj „Tylko pobierz”",
+  "YEET into timeline": "YEET na timeline",
   "Download only": "Tylko pobierz",
   "Add to queue": "Dodaj do kolejki",
   "Queued clips download side by side, without inserting. YEET them from the clips list when they're done.":
@@ -50,19 +51,19 @@ export const PL: Record<string, string> = {
   // ---- first run ----
   "Welcome to {app}": "Witaj w {app}",
   "Paste a link, pick a range, press YEET — the clip lands on your timeline. Which timeline?":
-    "Wklej link, wybierz fragment, naciśnij YEET — klip ląduje na osi czasu. W którym programie?",
-  "Studio · talks to Resolve directly": "Studio · rozmawia z Resolve bezpośrednio",
+    "Wklej link, wybierz fragment, naciśnij YEET — klip ląduje na timelinie. W którym programie?",
+  "Studio or Free · straight onto your timeline": "Studio lub Free · prosto na timeline",
   "25+ · through a small panel": "25+ · przez mały panel",
   "You can change this any time in Settings.": "Możesz to zmienić w każdej chwili w Ustawieniach.",
   "Skip": "Pomiń",
-  "YEETingus talks to Resolve through its scripting API. Two things to know:":
-    "YEETingus rozmawia z Resolve przez jego API do skryptów. Dwie rzeczy, które warto wiedzieć:",
-  "<b>It needs Resolve Studio.</b> External scripting — a program outside Resolve putting clips on your timeline — is a Studio feature. On the free version, <b>Download only</b> still works; you drag the file in yourself.":
-    "<b>Potrzebny jest Resolve Studio.</b> Zewnętrzne skrypty — program spoza Resolve, który kładzie klipy na oś czasu — to funkcja wersji Studio. W darmowej wersji <b>Tylko pobierz</b> nadal działa; plik przeciągasz sam.",
-  "<b>Turn external scripting on</b>, once: <code>Preferences → System → General → External scripting using → Local</code>.":
-    "<b>Włącz zewnętrzne skrypty</b>, jednorazowo: <code>Preferences → System → General → External scripting using → Local</code>.",
-  "<b>Optional:</b> a YEETingus entry in Resolve's Scripts menu, so you can open it from inside Resolve.":
-    "<b>Opcjonalnie:</b> pozycja YEETingus w menu Scripts w Resolve, żeby otwierać go z wnętrza Resolve.",
+  "YEETingus puts clips on Resolve's timeline itself. How depends on your version:":
+    "YEETingus sam kładzie klipy na timeline w Resolve. Jak — zależy od wersji:",
+  "<b>Studio:</b> turn external scripting on, once: <code>Preferences → System → General → External scripting using → Local</code>.":
+    "<b>Studio:</b> włącz zewnętrzne skrypty, jednorazowo: <code>Preferences → System → General → External scripting using → Local</code>.",
+  "<b>Free:</b> there's no external scripting, so YEETingus runs a small bridge inside Resolve. Add the menu entry below and restart Resolve. Then, each time you open Resolve, start YEETingus and click <code>Workspace → Scripts → YEETingus</code>.":
+    "<b>Free:</b> nie ma zewnętrznych skryptów, więc YEETingus uruchamia mały skrypt-pośrednik wewnątrz Resolve. Dodaj poniżej pozycję w menu i uruchom ponownie Resolve. Potem, za każdym razem gdy otwierasz Resolve, włącz YEETingus i kliknij <code>Workspace → Scripts → YEETingus</code>.",
+  "<b>The Scripts menu entry.</b> Free needs it. On Studio it's optional: it opens YEETingus from inside Resolve.":
+    "<b>Pozycja w menu Scripts.</b> We Free jest niezbędna. W Studio jest opcjonalna: otwiera YEETingus z wnętrza Resolve.",
   "re-check": "sprawdź ponownie",
   "Back": "Wstecz",
   "Done": "Gotowe",
@@ -92,11 +93,11 @@ export const PL: Record<string, string> = {
   "Menu": "Menu",
   "Resolve's Scripts folder not found — is Resolve installed for this user?":
     "Nie znaleziono folderu Scripts Resolve — czy Resolve jest zainstalowany dla tego użytkownika?",
-  "entry points at another YEETingus — update it": "pozycja wskazuje inny YEETingus — zaktualizuj ją",
+  "entry is out of date — update it": "pozycja jest nieaktualna — zaktualizuj ją",
   "in Workspace → Scripts → Utility": "w Workspace → Scripts → Utility",
   "not in Resolve's menu yet": "jeszcze nie ma go w menu Resolve",
-  "Optional — it just launches YEETingus from inside Resolve. Resolve reads its menu at startup, so restart it afterwards.":
-    "Opcjonalne — pozwala tylko uruchamiać YEETingus z wnętrza Resolve. Resolve wczytuje menu przy starcie, więc uruchom go potem ponownie.",
+  "Needed on Resolve Free: clicking it starts the bridge that inserts your clips. On Studio it just opens YEETingus. Resolve reads its menu at startup, so restart it afterwards.":
+    "Niezbędne w Resolve Free: kliknięcie uruchamia skrypt-pośrednik, który wstawia klipy. W Studio tylko otwiera YEETingus. Resolve wczytuje menu przy starcie, więc uruchom go potem ponownie.",
 
   // ---- preview, queue, clips ----
   "No thumbnail": "Brak miniatury",
@@ -107,7 +108,7 @@ export const PL: Record<string, string> = {
   "{n} left": "zostało: {n}",
   "all done": "wszystko gotowe",
   "Clear finished": "Wyczyść zakończone",
-  "Bin: {bin}": "Pojemnik: {bin}",
+  "Bin: {bin}": "Bin: {bin}",
   "Stop this download": "Zatrzymaj to pobieranie",
   "Remove from the queue": "Usuń z kolejki",
   "Remove from the list": "Usuń z listy",
@@ -122,7 +123,7 @@ export const PL: Record<string, string> = {
   "Clips": "Klipy",
   "Show all clips": "Pokaż wszystkie klipy",
   "Done selecting": "Zakończ zaznaczanie",
-  "Select clips to YEET into the timeline": "Zaznacz klipy do YEETnięcia na oś czasu",
+  "Select clips to YEET into the timeline": "Zaznacz klipy do YEETnięcia na timeline",
   "Select clips to delete": "Zaznacz klipy do usunięcia",
   "Open the {bin} folder": "Otwórz folder {bin}",
   "Open clips folder": "Otwórz folder klipów",
@@ -130,9 +131,9 @@ export const PL: Record<string, string> = {
   "Your downloaded clips will appear here.": "Tu pojawią się pobrane klipy.",
   "Click to copy the title": "Kliknij, aby skopiować tytuł",
   "copied": "skopiowano",
-  "Show only the {bin} bin": "Pokaż tylko pojemnik {bin}",
+  "Show only the {bin} bin": "Pokaż tylko bin {bin}",
   "Click to copy the channel": "Kliknij, aby skopiować nazwę kanału",
-  "YEET into the timeline": "YEET na oś czasu",
+  "YEET into the timeline": "YEET na timeline",
   "Play in your video player": "Odtwórz w odtwarzaczu wideo",
   "Copy the video's link": "Skopiuj link do filmu",
   "Source link unknown for this clip": "Link źródłowy tego klipu jest nieznany",
@@ -174,13 +175,13 @@ export const PL: Record<string, string> = {
   "Auto follows your system.": "Auto — według języka systemu.",
   "Auto": "Auto",
   "Frame rate": "Liczba klatek",
-  "What happens when a clip's frame rate differs from the timeline's.": "Co się dzieje, gdy klip ma inną liczbę klatek na sekundę niż oś czasu.",
-  "Sharp": "Ostro",
-  "Blend": "Mieszanie",
+  "What happens when a clip's frame rate differs from the timeline's.": "Co się dzieje, gdy klip ma inną liczbę klatek na sekundę niż timeline.",
+  "Sharp": "Sharp",
+  "Blend": "Blend",
   "Optical Flow": "Optical Flow",
   "Off": "Wył.",
   "<b>Sharp</b> and <b>Blend</b> convert the file here, once, to the timeline's rate: Sharp keeps every frame crisp (a 60 fps clip on 24p gets the same 2-3 pulldown any NLE gives it), Blend mixes neighbouring frames, smoother but ghosted on fast footage.":
-    "<b>Ostro</b> i <b>Mieszanie</b> przeliczają plik tutaj, raz, na klatkaż osi czasu: Ostro zostawia każdą klatkę wyraźną (klip 60 fps na osi 24p dostaje ten sam pulldown 2-3, co w każdym programie do montażu), Mieszanie łączy sąsiednie klatki — płynniej, ale z duchami przy szybkim ruchu.",
+    "<b>Sharp</b> i <b>Blend</b> przeliczają plik tutaj, raz, na klatkaż timeline’u: Sharp zostawia każdą klatkę wyraźną (klip 60 fps na timelinie 24p dostaje ten sam pulldown 2-3, co w każdym programie do montażu), Blend łączy sąsiednie klatki — płynniej, ale z duchami przy szybkim ruchu.",
   "<b>Optical Flow</b> keeps the file as is and has Resolve retime it, smooth <i>and</i> sharp, but GPU-heavy.":
     "<b>Optical Flow</b> zostawia plik bez zmian i każe Resolve go przeliczyć — płynnie <i>i</i> ostro, ale mocno obciąża GPU.",
   "<b>Off</b> inserts the clip at its own rate and lets the editor cope.":
@@ -207,11 +208,11 @@ export const PL: Record<string, string> = {
   // ---- source ----
   "Source": "Źródło",
   "Paste a video link…": "Wklej link do filmu…",
-  "Bin": "Pojemnik",
+  "Bin": "Bin",
   "None — straight into the clips folder": "Brak — prosto do folderu klipów",
   "A folder inside the clips folder for one project's clips, e.g. Friday video.\nLeave it empty for no bin. It stays filled in until you change it.":
-    "Folder w folderze klipów na klipy z jednego projektu, np. Piątkowy film.\nZostaw puste, jeśli bez pojemnika. Wpis zostaje, dopóki go nie zmienisz.",
-  "Use today's date as the bin": "Użyj dzisiejszej daty jako pojemnika",
+    "Folder w folderze klipów na klipy z jednego projektu, np. Piątkowy film.\nZostaw puste, jeśli bez binu. Wpis zostaje, dopóki go nie zmienisz.",
+  "Use today's date as the bin": "Użyj dzisiejszej daty jako nazwy binu",
   "Today": "Dziś",
   "In point": "Początek",
   "Leave both points at 00:00 to download the entire video.\nOtherwise the end point follows automatically, using the default clip length from Settings.":
@@ -236,7 +237,7 @@ export const SERVER_PL: Record<string, string> = {
   "checking…": "sprawdzam…",
   "missing tools": "brak narzędzi",
   "ffmpeg missing": "brak ffmpeg",
-  "no timeline open": "brak otwartej osi czasu",
+  "no timeline open": "brak otwartego timeline’u",
   "no project open": "brak otwartego projektu",
   "Resolve not connected": "Resolve niepołączony",
   "Resolve error": "błąd Resolve",
@@ -278,7 +279,7 @@ export const SERVER_PL: Record<string, string> = {
 export const SERVER_PL_PATTERNS: [RegExp, (m: RegExpExecArray) => string][] = [
   [/^Downloading… ([\d.]+)%$/, (m) => `Pobieram… ${m[1]}%`],
   [/^Preparing… (\d+)%$/, (m) => `Przygotowuję… ${m[1]}%`],
-  [/^Pasting into timeline…( \(\d+\/\d+\))?$/, (m) => `Wklejam na oś czasu…${m[1] ?? ""}`],
+  [/^Pasting into timeline…( \(\d+\/\d+\))?$/, (m) => `Wklejam na timeline…${m[1] ?? ""}`],
   [/^Done — (\d+) clips$/, (m) => `Gotowe — klipy: ${m[1]}`],
   [/^Done — (.+)$/, (m) => `Gotowe — ${m[1]}`],
   [/^(.+) · no sequence open$/, (m) => `${m[1]} · brak otwartej sekwencji`],
