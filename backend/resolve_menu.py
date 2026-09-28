@@ -19,6 +19,10 @@ On macOS the launcher is given the .app bundle, not the executable inside
 it: the bundle is opened through Launch Services (/usr/bin/open), which
 starts it with a clean environment and brings up the running copy instead
 of a second one. See launch_target.
+
+On Resolve Free the same entry also starts the insert bridge (see
+resolve_mailbox), whose folder is baked in as BRIDGE_DIR. A launcher from
+before that is reported stale, so Settings offers to reinstall it.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import sys
 from datetime import datetime
 
 import platform_paths as pp
+import resolve_mailbox
 from version import APP_NAME, __version__
 
 LUA_NAME = f"{APP_NAME}.lua"
@@ -88,6 +93,18 @@ def installed_target() -> str | None:
         return None
 
 
+def installed_has_bridge() -> bool:
+    """Whether the installed launcher knows the Free insert bridge."""
+    p = installed_path()
+    if not p:
+        return False
+    try:
+        with open(p, "r", encoding="ascii", errors="replace") as fh:
+            return "local BRIDGE_DIR" in fh.read()
+    except OSError:
+        return False
+
+
 def info(app_exe: str | None) -> dict:
     app_exe = launch_target(app_exe)
     path = installed_path()
@@ -96,10 +113,11 @@ def info(app_exe: str | None) -> dict:
         "installed": path is not None,
         "path": path,
         "target": target,
-        # The launcher points somewhere else than this app: an old install,
-        # or a dev build alongside a packaged one.
-        "stale": bool(path and app_exe and target
-                      and os.path.normcase(target) != os.path.normcase(app_exe)),
+        # The launcher points somewhere else than this app (an old install,
+        # or a dev build alongside a packaged one), or predates the bridge.
+        "stale": bool(path and ((app_exe and target
+                                 and os.path.normcase(target) != os.path.normcase(app_exe))
+                                or not installed_has_bridge())),
         "app_exe": app_exe,
         "resolve_found": any(os.path.isdir(d) for d in pp.scripts_dirs()),
     }
@@ -159,6 +177,12 @@ def install(app_exe: str | None, log) -> str:
     log_path = _ascii_path(os.path.join(pp.app_data_dir(), "launcher.log"))
     if not log_path.isascii():
         log_path = ""                   # the launcher's log is best effort
+    # The Free insert bridge: its script and mailbox. Written now, so the
+    # first click in Resolve finds it. Lua's loadfile takes a narrow path.
+    bridge = _ascii_path(resolve_mailbox.ensure_bridge()).replace("\\", "/")
+    if not bridge.isascii():
+        bridge = ""
+        log("  Resolve Free insert unavailable: the app data folder has no ASCII path.")
     values = (
         ("@@YEET_DIR@@", app_dir),
         ("@@SHIM@@", target),           # no shim any more; the app clears the env itself
@@ -167,6 +191,7 @@ def install(app_exe: str | None, log) -> str:
         ("@@APP_NAME@@", APP_NAME),
         ("@@VERSION@@", __version__),
         ("@@INSTALLED_AT@@", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("@@BRIDGE_DIR@@", bridge),
     )
     bad = next((value for _, value in values if not value.isascii()), None)
     if bad is not None:

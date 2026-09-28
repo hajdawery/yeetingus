@@ -313,6 +313,10 @@ def build_service() -> int:
         # so Settings can install either.
         "--add-data", f"{panel}{os.pathsep}premiere/panel",
         "--add-data", f"{os.path.join(HERE, 'resolve', NAME + '.lua.in')}{os.pathsep}resolve",
+        # The Resolve Free insert bridge; the service writes it where the
+        # launcher loads it from.
+        "--add-data", f"{os.path.join(HERE, 'resolve', NAME + 'Bridge.lua')}{os.pathsep}resolve",
+        "--hidden-import", "resolve_mailbox",
         os.path.join(HERE, "backend", "service.py"),
     ]
     if WINDOWS:

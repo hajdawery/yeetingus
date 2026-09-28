@@ -22,6 +22,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import platform_paths as _pp  # noqa: E402
+import resolve_mailbox  # noqa: E402
 
 # Where Resolve puts its scripting API and native library, per platform. The
 # lists cover non-default install locations too. RESOLVE_SCRIPT_API /
@@ -138,6 +139,28 @@ def connect():
     return app
 
 
+def _app_or_bridge():
+    """Resolve's app handle over external scripting, or None when the
+    in-Resolve bridge should be used instead (Resolve Free, which has no
+    external scripting since 19.1; see resolve_mailbox).
+
+    External scripting is tried first, so Studio never waits on the bridge.
+    Raises ResolveError when neither is there, saying how to fix both."""
+    try:
+        return connect()
+    except ResolveError as e:
+        if resolve_mailbox.might_be_running():
+            return None
+        raise ResolveError(f"{e} {resolve_mailbox.HOW_TO_START}") from e
+
+
+def _bridge(cmd: str, args: dict | None = None) -> dict:
+    try:
+        return resolve_mailbox.call(cmd, args)
+    except resolve_mailbox.MailboxError as e:
+        raise ResolveError(str(e)) from e
+
+
 def _timecode_to_frames(tc: str, fps: float) -> int | None:
     """'HH:MM:SS:FF' (or drop-frame 'HH:MM:SS;FF') -> frame index.
 
@@ -176,7 +199,14 @@ def get_timeline_info() -> dict:
 
     Raises ResolveError with a message fit for the UI when Resolve is not
     running, or has no project or timeline open."""
-    app = connect()
+    app = _app_or_bridge()
+    if app is None:
+        info = _bridge("GetTimelineInfo")
+        fps = _fps(info.get("fps"), 24.0)
+        info["fps"] = fps
+        info["playbackFps"] = info.get("playbackFps") or None
+        info["currentFrame"] = _timecode_to_frames(info.get("currentTimecode"), fps)
+        return info
     project = app.GetProjectManager().GetCurrentProject()
     if not project:
         raise ResolveError("No project is open in Resolve.")
@@ -303,7 +333,10 @@ def import_and_insert(path: str, insert_at: str = "playhead",
     if not os.path.isfile(path):
         raise ResolveError(f"File not found: {path}")
 
-    app = connect()
+    app = _app_or_bridge()
+    if app is None:
+        return _insert_via_bridge(path, insert_at, track_index, start_frame, end_frame,
+                                  retime, bin_name)
     project = app.GetProjectManager().GetCurrentProject()
     if not project:
         raise ResolveError("No project is open in Resolve.")
@@ -414,3 +447,28 @@ def import_and_insert(path: str, insert_at: str = "playhead",
         pass
 
     return out
+
+
+def _insert_via_bridge(path: str, insert_at: str, track_index: int | None,
+                       start_frame: int, end_frame: int | None,
+                       retime: str, bin_name: str) -> dict:
+    """import_and_insert through the in-Resolve bridge: the same steps, run
+    by YEETingusBridge.lua, with the same result shape."""
+    res = _bridge("ImportAndInsert", {
+        "path": resolve_mailbox.lua_path(path),
+        "insertAt": insert_at,
+        "trackIndex": track_index,
+        "startFrame": int(start_frame) if start_frame else None,
+        "endFrame": int(end_frame) if end_frame is not None else None,
+        "retime": RETIME_PROCESSES.get(retime, 0),
+        "retimeName": retime,
+        "bin": bin_name or None,
+    })
+    return {
+        "clipName": res.get("clipName") or os.path.basename(path),
+        "insertedFrame": res.get("insertedFrame"),
+        "trackIndex": res.get("trackIndex") or 1,
+        "newTrack": bool(res.get("newTrack")),
+        "retimed": res.get("retimed"),
+        "bin": res.get("bin"),
+    }

@@ -356,6 +356,8 @@ def install_launcher() -> str | None:
         ("@@APP_NAME@@", APP),
         ("@@VERSION@@", read_version()),
         ("@@INSTALLED_AT@@", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        # Resolve Free's insert bridge; the app writes the script there.
+        ("@@BRIDGE_DIR@@", os.path.join(pp.app_data_dir(), "resolve-bridge").replace("\\", "/")),
     ):
         text = text.replace(token, value)
     # Match only real tokens (@@NAME@@) — the template legitimately mentions "@@"

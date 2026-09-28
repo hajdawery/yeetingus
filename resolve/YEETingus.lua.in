@@ -5,7 +5,7 @@
   `py -3.13 install.py`, which substitutes the @@...@@ placeholders below with
   absolute paths.
 
-  Four hard-won details, each of which caused a silent do-nothing failure:
+  Five hard-won details, each of which caused a silent do-nothing failure:
 
   1. NO ENVIRONMENT VARIABLES. Resolve's embedded Lua host does not reliably
      expose %LOCALAPPDATA%. When os.getenv returned nil every path became
@@ -28,6 +28,23 @@
   4. Resolve caches this file when it builds the Scripts menu at startup. After
      reinstalling, restart Resolve or it keeps running the old copy.
 
+  5. RESOLVE FREE 21.1 SANDBOX. Free 21.1 runs Scripts-menu Lua with io,
+     package, require, ffi, os.execute, os.rename and os.remove set to nil and
+     print muted. Touching any of them unguarded throws; this file used to die
+     on package.config at the IS_WINDOWS line. So every use below is guarded
+     and the platform comes from jit.os. Free cannot start an external app at
+     all (AutoSubs' release notes say the same), so there every strategy fails
+     and the user starts YEETingus themselves. Studio keeps the full library
+     and takes the same path through this file as before.
+     See RESOLVE-FREE-INSERT.md.
+
+  6. RESOLVE FREE HAS NO EXTERNAL SCRIPTING (since 19.1), so the app can't
+     reach the timeline from outside. On Free this file therefore also starts
+     the insert bridge: BRIDGE_DIR/bridge.lua (YEETingusBridge.lua, written by
+     the app), loaded with loadfile so an app update updates it. It keeps
+     running until Resolve quits, answering the app through a file mailbox.
+     A second click replaces the running copy. Studio never starts it.
+
   This template serves every platform; install.py bakes in the paths for the one
   it is running on, and the launch strategies below are chosen at runtime.
 ]]--
@@ -40,21 +57,44 @@ local LOG_PATH = [[@@LOG@@]]
 local APP_NAME     = [[@@APP_NAME@@]]
 local VERSION      = [[@@VERSION@@]]
 local INSTALLED_AT = [[@@INSTALLED_AT@@]]
+-- The Free insert bridge and its mailbox; forward slashes, ASCII (note 6).
+local BRIDGE_DIR   = [[@@BRIDGE_DIR@@]]
 
--- Lua has no os.name. This is the portable idiom: the config string's first
--- character is the path separator, which is "\" only on Windows.
-local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+-- The Free 21.1 sandbox mutes print and may remove it outright (note 5).
+local print = print or function() end
+local HAS_IO = type(io) == "table" and type(io.open) == "function"
+-- No io and no require: the Free 21.1 sandbox, which can't start an app.
+local SANDBOXED = not HAS_IO and type(require) ~= "function"
+
+-- Lua has no os.name. LuaJIT's jit.os survives the Free 21.1 sandbox.
+-- package.config (its first character is the path separator, "\" only on
+-- Windows) does not, so it is only the fallback; the baked path style is last.
+local function detect_windows()
+  if type(jit) == "table" and type(jit.os) == "string" then
+    return jit.os == "Windows"
+  end
+  if type(package) == "table" and type(package.config) == "string" then
+    return package.config:sub(1, 1) == "\\"
+  end
+  return YEET_DIR:find("\\", 1, true) ~= nil
+end
+local IS_WINDOWS = detect_windows()
+
+local function getenv(name)
+  if type(os.getenv) == "function" then return os.getenv(name) end
+  return nil
+end
 
 -- If this file was copied without substitution, fall back to the environment.
 if YEET_DIR:find("@@", 1, true) then
   local base
   if IS_WINDOWS then
-    base = (os.getenv("LOCALAPPDATA") or "") .. "\\YEETingus"
+    base = (getenv("LOCALAPPDATA") or "") .. "\\YEETingus"
     SHIM = base .. "\\launch_yeetingus.bat"
     EXE  = base .. "\\YEETingus.exe"
     LOG_PATH = base .. "\\launcher.log"
   else
-    base = (os.getenv("HOME") or "") .. "/Library/Application Support/YEETingus"
+    base = (getenv("HOME") or "") .. "/Library/Application Support/YEETingus"
     SHIM = base .. "/launch_yeetingus.sh"
     EXE  = base .. "/YEETingus.app"
     LOG_PATH = base .. "/launcher.log"
@@ -64,28 +104,56 @@ if YEET_DIR:find("@@", 1, true) then
   VERSION = "unknown (unsubstituted template)"
   INSTALLED_AT = "unknown"
 end
+if BRIDGE_DIR:find("@@", 1, true) then
+  local base
+  if IS_WINDOWS then
+    base = getenv("LOCALAPPDATA")
+  elseif getenv("HOME") then
+    base = getenv("HOME") .. "/Library/Application Support"
+  end
+  BRIDGE_DIR = base and ((base .. "/YEETingus/resolve-bridge"):gsub("\\", "/")) or ""
+end
 
+-- Without io (Free 21.1) there is no log file, and the attempts go nowhere.
 local function log(msg)
   print("[" .. APP_NAME .. "] " .. msg)
+  if not HAS_IO then return end
   local ok, fh = pcall(io.open, LOG_PATH, "a")
   if ok and fh then
-    fh:write(os.date("%Y-%m-%d %H:%M:%S ") .. msg .. "\n")
+    local stamp = type(os.date) == "function" and os.date("%Y-%m-%d %H:%M:%S ") or ""
+    fh:write(stamp .. msg .. "\n")
     fh:close()
   end
 end
 
+-- Fusion's own checks, the only ones the Free 21.1 sandbox keeps.
+local function bmd_exists(path)
+  if type(bmd) ~= "table" then return false end
+  for _, fn in ipairs({ bmd.fileexists, bmd.direxists }) do
+    if type(fn) == "function" then
+      local ok, found = pcall(fn, path)
+      if ok and found then return true end
+    end
+  end
+  return false
+end
+
 local function file_exists(path)
   if not path or path == "" then return false end
-  local fh = io.open(path, "rb")
-  if fh then
-    fh:close()
-    return true
+  if HAS_IO then
+    local fh = io.open(path, "rb")
+    if fh then
+      fh:close()
+      return true
+    end
   end
   -- io.open fails on directories, and on macOS the app IS a directory: a .app
   -- bundle is a folder. os.rename(p, p) succeeds for anything that exists,
   -- which is the portable way to ask "is there something here at all".
-  local ok = os.rename(path, path)
-  return ok == true
+  if type(os.rename) == "function" and os.rename(path, path) == true then
+    return true
+  end
+  return bmd_exists(path)
 end
 
 -- The file whose size is worth reporting. On macOS the installed app is a
@@ -104,6 +172,7 @@ end
 
 -- Lua has no stat(); seek("end") gives the size.
 local function file_size(path)
+  if not HAS_IO then return nil end
   local fh = io.open(payload_path(path), "rb")
   if not fh then return nil end
   local size = fh:seek("end")
@@ -163,6 +232,7 @@ end
 -- SW_HIDE stops the shim's console flashing; the GUI app still shows its window.
 -- ShellExecuteA returns >32 on success.
 local function launch_ffi(target, workdir)
+  if type(require) ~= "function" then return false, "no require" end
   local ok_ffi, ffi = pcall(require, "ffi")
   if not ok_ffi then return false, "no ffi module" end
 
@@ -185,7 +255,7 @@ end
 -- platform's file-association machinery, so on macOS it is only used on the .app
 -- bundle -- see launch_sh for why it must not be pointed at the shim.
 local function launch_bmd(target)
-  if not (bmd and bmd.openfileexternal) then
+  if not (type(bmd) == "table" and bmd.openfileexternal) then
     return false, "bmd.openfileexternal unavailable"
   end
   local ok, rc = pcall(bmd.openfileexternal, "Open", target)
@@ -194,6 +264,7 @@ end
 
 -- Windows os.execute (unreliable inside Resolve, fine under fuscript).
 local function launch_os_win(target)
+  if type(os.execute) ~= "function" then return false, "no os.execute" end
   local ok, rc = pcall(os.execute, 'start "" /min "' .. target .. '"')
   return (ok and (rc == true or rc == 0)),
          "os.execute ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
@@ -226,6 +297,7 @@ local function posix_command(target)
 end
 
 local function launch_sh(target)
+  if type(os.execute) ~= "function" then return false, "no os.execute" end
   local ok, rc = pcall(os.execute, posix_command(target))
   return (ok and (rc == true or rc == 0 or rc == nil)),
          "os.execute ok=" .. tostring(ok) .. " rc=" .. tostring(rc)
@@ -234,6 +306,9 @@ end
 -- Same command via io.popen, for a host where os.execute is stubbed out.
 -- LuaJIT's close() doesn't return the exit status, so the command echoes it.
 local function launch_popen(target)
+  if not (HAS_IO and type(io.popen) == "function") then
+    return false, "io.popen unavailable"
+  end
   local ok, handle = pcall(io.popen, posix_command(target) .. '; echo "rc=$?"')
   if not ok or not handle then return false, "io.popen unavailable" end
   local out = ""
@@ -247,6 +322,7 @@ end
 -- the ShellExecuteA path plays on Windows -- a way out when the Lua host's own
 -- process functions have been stubbed.
 local function launch_ffi_system(target)
+  if type(require) ~= "function" then return false, "no require" end
   local ok_ffi, ffi = pcall(require, "ffi")
   if not ok_ffi then return false, "no ffi module" end
   pcall(ffi.cdef, [[ int system(const char *command); ]])
@@ -300,7 +376,10 @@ local reinstall = IS_WINDOWS
 -- The shim is the only supported entry point: it clears PYTHONHOME first, and in
 -- --dev installs it runs the source script instead of the built app. So check
 -- for it before worrying about whether the app exists.
-if file_exists(SHIM) then
+if SANDBOXED then
+  -- Free 21.1: nothing in here can start a program (note 5).
+  log("sandboxed Resolve: start " .. APP_NAME .. " yourself.")
+elseif file_exists(SHIM) then
   log("launching shim: " .. SHIM)
   launched = try_launch(SHIM, YEET_DIR, EXE)
   log(launched and "launched." or "ERROR: every launch mechanism failed.")
@@ -314,4 +393,54 @@ else
   log("  (never launch the app directly from Resolve -- see note 3 above)")
 end
 
-print_footer(launched)
+if not SANDBOXED then print_footer(launched) end
+
+-- Resolve Free: run the insert bridge here until Resolve quits (note 6). ------
+
+local function call(fn, ...)
+  local ok, value = pcall(fn, ...)
+  if ok then return value end
+  return nil
+end
+
+local function resolve_app()
+  if type(resolve) ~= "nil" then return resolve end
+  if type(Resolve) == "function" then return call(Resolve) end
+  return nil
+end
+
+local function fusion_app(r)
+  if type(fusion) ~= "nil" then return fusion end
+  if type(fu) ~= "nil" then return fu end
+  return r and call(function() return r:Fusion() end)
+end
+
+local function is_studio(r)
+  local name = r and call(function() return r:GetProductName() end)
+  if type(name) ~= "string" then
+    return not SANDBOXED       -- unknown: a full library means Studio or old Free
+  end
+  return name:find("Studio", 1, true) ~= nil
+end
+
+local function start_bridge()
+  local r = resolve_app()
+  if not r or is_studio(r) then return end
+  if BRIDGE_DIR == "" then
+    log("no bridge folder baked in; reinstall the menu entry from the app.")
+    return
+  end
+  local chunk = loadfile(BRIDGE_DIR .. "/bridge.lua")
+  if not chunk then
+    log("no bridge at " .. BRIDGE_DIR .. "/bridge.lua; start " .. APP_NAME .. " once first.")
+    return
+  end
+  local run = call(chunk)
+  if type(run) ~= "function" then return end
+  log("insert bridge running.")
+  local ok, err = pcall(run, { dir = BRIDGE_DIR, version = VERSION,
+                               fusion = fusion_app(r), resolve = r })
+  if not ok then log("insert bridge stopped: " .. tostring(err)) end
+end
+
+start_bridge()

@@ -10,7 +10,7 @@ For DaVinci Resolve and Premiere Pro.
 
 ![version](https://img.shields.io/badge/version-2.1.1-fcca74?style=flat-square&labelColor=1a1a1a)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4?style=flat-square&labelColor=1a1a1a)
-![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio-ff5f56?style=flat-square&labelColor=1a1a1a)
+![resolve](https://img.shields.io/badge/DaVinci%20Resolve-Studio%20%26%20Free-ff5f56?style=flat-square&labelColor=1a1a1a)
 ![premiere](https://img.shields.io/badge/Premiere%20Pro-25%2B-9999ff?style=flat-square&labelColor=1a1a1a)
 ![license](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=1a1a1a)
 
@@ -66,11 +66,33 @@ YEETingus does that in one go. It downloads only the part you asked for, convert
 
 ## 🎬 DaVinci Resolve
 
-Needs **Resolve Studio**. External scripting (a program outside Resolve touching your timeline) is a Studio feature. On the free version, **Download only** still works and you drag the file in yourself.
+Works with **Resolve Studio** and **Resolve Free**. Studio needs no extra clicks. Free needs one click per Resolve session.
 
-Turn scripting on once: `Preferences → System → General → External scripting using → Local`. The app tells you if it's off.
+**Studio.** Turn scripting on once: `Preferences → System → General → External scripting using → Local`. The app tells you if it's off. Optional: Settings can add a YEETingus entry to Resolve's Scripts menu, so you can open the app from inside Resolve.
 
-Optional: Settings can add a YEETingus entry to Resolve's Scripts menu, so you can open it from inside Resolve.
+**Free.** Setup, once:
+
+1. Settings → **Add to Resolve's Scripts menu**. Restart Resolve, which reads that menu only at startup.
+
+Then, every time you open Resolve:
+
+2. Start YEETingus yourself.
+3. In Resolve: **Workspace → Scripts → YEETingus**. Nothing seems to happen. That's right. The bridge is now running and stays running until you quit Resolve.
+
+### How Free works
+
+Free has no external scripting, so no program outside Resolve can touch your timeline. Since 21.1 it also runs scripts in a sandbox: no files, no programs, no network. What's left: a Lua script started from the Scripts menu may keep running, read a file, and write Resolve's own settings file.
+
+So the menu entry starts a small bridge script *inside* Resolve. YEETingus writes a request into a file in its own folder. The bridge picks it up within a tenth of a second, runs it with Resolve's own API, and writes the answer into Resolve's settings file, which YEETingus reads back. The steps are the same as on Studio: import, bin, playhead, first free track, retime. AutoSubs uses the same trick.
+
+### What Free can't do
+
+- **Start by itself.** You click the Scripts entry once per Resolve session. Nothing can start the bridge automatically. AutoSubs tried it with a startup script, and Fusion's controls broke for the whole session.
+- **Open YEETingus.** Free 21.1 can't start programs, so the menu entry can't launch the app. You start it yourself. On Free 21.0 and older the entry still opens it.
+- **Get past a dialog.** While a dialog is open in Resolve, the bridge waits. The insert times out after 90 seconds and tells you why.
+- **Stay fixed.** Blackmagic doesn't document the sandbox. A Resolve update can close this path. If it does, **Download only** and a drag still work.
+- **Handle every file name everywhere.** On Windows, names with non-Latin letters go to Resolve by their short 8.3 name. A drive without short names may refuse them.
+- **Prove itself yet.** Free support is new, and the tests run it against a stand-in Resolve. If it breaks on yours, open an issue with the log.
 
 ---
 
@@ -111,7 +133,7 @@ So when Premiere is your editor, YEETingus encodes **HEVC** instead. Same half-s
 | | |
 |---|---|
 | OS | Windows 10/11, or macOS on Apple Silicon |
-| DaVinci Resolve | **Studio**, with `External scripting using → Local` |
+| DaVinci Resolve | **Studio** with `External scripting using → Local`, or **Free** with the Scripts-menu click (see above) |
 | Premiere Pro | Any version with UXP (25 or newer; tested on 26.3), plus Creative Cloud desktop for its plugin installer |
 | yt-dlp, ffmpeg, Deno | Fetched automatically on first run (macOS: `brew install ffmpeg`) |
 | Python / Node / Rust | Only if you build from source |
@@ -181,7 +203,9 @@ Your Videos folder, in a `YEETingus` subfolder, one folder per video. Fill in th
 
 ## 🔧 Troubleshooting
 
-**Resolve is not connected.** Resolve is running, a project and timeline are open, `External scripting using` is Local, and it's Studio. Click the status pill to re-check.
+**Resolve is not connected.** Resolve is running, and a project and timeline are open. On Studio, `External scripting using` is Local. On Free, you clicked Workspace → Scripts → YEETingus since Resolve started. Click the status pill to re-check.
+
+**Free: the Scripts entry does nothing, still not connected.** An entry added by an older YEETingus doesn't know the bridge. Settings offers **Update the Resolve menu entry**. Click it, then restart Resolve.
 
 **Playback is choppy but scrubbing is fine.** Check Resolve's Project Settings → Master Settings → Playback frame rate. If it says 24 under a 60 fps timeline, that's it. The app warns about this in the log.
 
