@@ -129,6 +129,8 @@ export const PL: Record<string, string> = {
   "Open clips folder": "Otwórz folder klipów",
   "Refresh": "Odśwież",
   "Your downloaded clips will appear here.": "Tu pojawią się pobrane klipy.",
+  "Search title, channel, bin…": "Szukaj po tytule, kanale, binie…",
+  "No clips match “{q}”": "Żaden klip nie pasuje do „{q}”",
   "Click to copy the title": "Kliknij, aby skopiować tytuł",
   "copied": "skopiowano",
   "Show only the {bin} bin": "Pokaż tylko bin {bin}",

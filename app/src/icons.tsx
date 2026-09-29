@@ -68,6 +68,7 @@ export const X = icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
 export const ListPlus = icon(
   '<path d="M11 12H3"/><path d="M16 6H3"/><path d="M16 18H3"/><path d="M18 9v6"/><path d="M21 12h-6"/>',
 );
+export const Search = icon('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>');
 export const Square = icon('<rect width="14" height="14" x="5" y="5" rx="2"/>');
 export const Film = icon(
   '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>',

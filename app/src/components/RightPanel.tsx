@@ -1,9 +1,23 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Clip, Meta, QueueItem } from "../api";
-import { Alert, Check, CheckSquare, Download, Film, Folder, Link, Play, Refresh, Square, Trash, User, X } from "../icons";
+import { Alert, Check, CheckSquare, Download, Film, Folder, Link, Play, Refresh, Search, Square, Trash, User, X } from "../icons";
 import { secondsToTimestamp, toSeconds } from "../time";
 import { useI18n, type I18n } from "../i18n";
-import { IconButton, ProgressBar } from "./ui";
+import { Field, IconButton, ProgressBar } from "./ui";
+
+/** Lower case without accents, so "piatek" finds "Piątek" (ł has no
+ *  decomposition, hence the extra replace). */
+function fold(text: string): string {
+  return text.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ł/g, "l").replace(/Ł/g, "L").toLowerCase();
+}
+
+/** Every word of the query appears in the clip's title, file name, channel,
+ *  bin or link, in any order. */
+function matches(clip: Clip, words: string[]): boolean {
+  if (words.length === 0) return true;
+  const hay = fold([clip.title, clip.name, clip.channel, clip.bin, clip.source].filter(Boolean).join(" "));
+  return words.every((w) => hay.includes(w));
+}
 
 /** YouTube ids are 11 chars of [A-Za-z0-9_-]; for those the thumbnail is derivable. */
 function thumbFor(clip: Clip): string | null {
@@ -268,7 +282,20 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
   useEffect(() => {
     if (binFilter !== null && clips && !clips.some((c) => c.bin === binFilter)) setBinFilter(null);
   }, [clips, binFilter]);
-  const shown = binFilter === null ? all : all.filter((c) => c.bin === binFilter);
+  // Search: narrows whatever the bin filter shows. Ctrl+F (Cmd+F) jumps to it.
+  const [query, setQuery] = useState("");
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        const box = document.getElementById("clip-search") as HTMLInputElement | null;
+        if (box && box.offsetParent !== null) { e.preventDefault(); box.focus(); box.select(); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const shown = all.filter((c) => (binFilter === null || c.bin === binFilter) && matches(c, words));
   // The bin's own folder: the parent of any of its clips' video folders.
   const binDir = binFilter !== null && shown.length ? shown[0].folder.replace(/[\\/][^\\/]+[\\/]?$/, "") : undefined;
 
@@ -309,10 +336,34 @@ export function History({ clips, loading, busy, queueActive = false, canInsert, 
         <IconButton label={t("Refresh")} onClick={onRefresh} className={loading ? "is-spinning" : ""}><Refresh size={18} /></IconButton>
       </header>
 
+      {clips && clips.length > 0 && (
+        <div className="history-search">
+          <Field
+            id="clip-search"
+            type="search"
+            icon={<Search size={16} />}
+            placeholder={t("Search title, channel, bin…")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); } }}
+            onClear={() => setQuery("")}
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </div>
+      )}
+
       {clips && clips.length === 0 && (
         <div className="empty">
           <Film size={28} />
           <p>{t("Your downloaded clips will appear here.")}</p>
+        </div>
+      )}
+
+      {clips && clips.length > 0 && shown.length === 0 && words.length > 0 && (
+        <div className="empty">
+          <Search size={28} />
+          <p>{t("No clips match “{q}”", { q: query.trim() })}</p>
         </div>
       )}
 
